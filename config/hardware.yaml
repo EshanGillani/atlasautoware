@@ -1,0 +1,158 @@
+# Hardware bringup parameters — the real car (Jetson + OAK-D Pro + RPLidar +
+# VESC, actuated via PCA9685 PWM or direct VESC UART, auto-detected).
+# Launched by launch/car_bringup_launch.py.  Calibrate before first drive:
+# see docs/hardware.md.
+
+drive_node:
+  ros__parameters:
+    drive_topic: '/drive'
+    backend: 'auto'             # auto | pca9685 | vesc — auto probes both
+    # shared actuation calibration
+    max_speed: 7.0              # m/s at full throttle (start LOW, e.g. 2.0)
+    max_steer: 0.41             # rad at full servo throw
+    steer_invert: false
+    steer_trim_us: 0.0          # pulse offset to drive straight
+    cmd_timeout: 0.5            # s without /drive -> neutral
+    arm_time: 2.0               # s of neutral at startup (ESC arming)
+    enable_topic: '/supervisor/enable'  # supervisor gate (ANDs the RC kill
+    enable_timeout: 1.0                 # switch in); '' = bench testing only
+    # pca9685 backend (throttle pulse -> VESC PPM input, or any RC hobby ESC
+    # while the VESC hasn't arrived — see docs/hardware.md "without a VESC")
+    i2c_bus: 1                  # Jetson header i2c bus — check `i2cdetect -l`
+    i2c_address: 0x40
+    pwm_hz: 50.0
+    throttle_channel: 0
+    steer_channel: 1            # -1 if there is no separate steering servo
+    neutral_us: 1500.0
+    full_fwd_us: 2000.0
+    full_rev_us: 1000.0
+    steer_center_us: 1500.0
+    steer_half_range_us: 400.0
+    # vesc-uart backend (direct serial; also publishes wheel-speed odom)
+    serial_port: '/dev/ttyACM0'
+    serial_baud: 115200
+    erpm_gain: 4614.0           # erpm per m/s (poles, gear ratio, wheel dia)
+    odom_topic: '/vesc/odom'
+    odom_frame: 'odom'
+    base_frame: 'base_link'
+    telemetry_hz: 20.0
+
+rplidar_node:
+  ros__parameters:
+    port: '/dev/ttyUSB0'
+    baudrate: 115200            # A1/A2: 115200, A3/S1: 256000
+    scan_topic: '/scan'
+    frame_id: 'laser'
+    num_bins: 720
+    range_min: 0.10
+    range_max: 25.0
+    angle_offset: 0.0           # rad CCW, mounting yaw correction
+    deskew_odom_topic: '/ekf/odom'  # per-beam motion correction; '' = off
+
+velocity_ekf:
+  ros__parameters:
+    imu_topic: '/oakd/imu'
+    wheel_odom_topic: '/vesc/odom'  # only published by the vesc-uart backend
+    out_topic: '/ekf/odom'
+    l_r: 0.17145                # m, CG to rear axle
+    cmd_speed_topic: '/drive'   # no-VESC fallback: commanded speed (weak
+    wheel_timeout: 1.0          # trust) bounds IMU drift while wheel odom
+                                # is silent for this long; '' disables
+
+oakd_camera:
+  ros__parameters:
+    width: 640
+    height: 360
+    fps: 30.0
+    imu_hz: 200
+    rgb_topic: '/oakd/rgb'
+    info_topic: '/oakd/camera_info'
+    imu_topic: '/oakd/imu'
+    camera_frame: 'oakd_rgb'
+    imu_frame: 'oakd_imu'
+    yolo_blob: ''               # compiled .blob -> YOLO on the camera's VPU
+    yolo_conf: 0.4              # (blobconverter from the trained ONNX)
+    yolo_size: 416
+
+camera_perception:
+  ros__parameters:
+    image_topic: '/oakd/rgb'
+    odom_topic: '/pf/pose/odom'
+    backend: 'auto'             # auto | tensorrt | cuda | cpu — auto prefers a
+                                # .engine built on the Jetson (trtexec --fp16),
+                                # then cv2.dnn CUDA, then CPU
+    car_class: 2                # 2 = COCO 'car' (pretrained yolov8n via
+                                # tools/get_pretrained_models.py); 0 = custom
+
+rc_monitor:
+  ros__parameters:
+    gpio_pin: 18                # BOARD pin wired to a spare receiver channel
+    enable_topic: '/autonomy_enabled'  # (level-shift 5V receiver -> 3.3V!)
+    manual_below_us: 1300.0
+    auto_above_us: 1700.0
+    stale_after: 0.5            # transmitter off / out of range -> disarm
+
+sidewalk_follow:
+  ros__parameters:
+    image_topic: '/oakd/rgb'
+    scan_topic: '/scan'
+    drive_topic: '/drive'
+    model_path: ''              # Cityscapes segmentation ONNX (see
+    drivable_classes: [0, 1]    #  tools/get_pretrained_models.py); road+sidewalk
+    use_cuda: true
+    v_cruise: 1.2               # m/s — walking pace, SUPERVISED use only
+    aeb_dist: 0.8
+
+particle_filter:
+  ros__parameters:
+    map_yaml: ''                # '' = auto-find; the frozen SLAM map
+    scan_topic: '/scan'
+    ekf_odom_topic: '/ekf/odom' # velocity EKF twist = motion prior
+    out_topic: '/pf/pose/odom'  # what raceline_mpc/navigator localize on
+    n_particles: 1500
+    subsample: 20               # every Nth beam (1.3 ms/update at 18 beams)
+
+supervisor:                     # watchdog-of-watchdogs: rate/health monitors ->
+  ros__parameters:              # speed scaling (DEGRADED) or disarm (EMERGENCY)
+    scan_topic: '/scan'
+    pose_topic: '/pf/pose/odom'
+    imu_topic: '/oakd/imu'
+    drive_topic: '/drive'
+    slip_topic: '/ekf/slip'     # sustained slip -> DEGRADED, then EMERGENCY
+    rc_topic: '/autonomy_enabled'  # AND the RC kill switch into the output
+    cov_threshold: 0.5          # m^2 PF position variance -> DEGRADED
+    degraded_scale: 0.4
+    recover_after: 2.0
+
+navigator:                      # goal-driving mode: run INSTEAD of raceline_mpc
+  ros__parameters:              #   ros2 launch ... car_bringup_launch.py use_racing:=false
+    map_yaml: ''                #   ros2 run f1tenth_gym_ros navigator --ros-args --params-file ...
+    odom_topic: '/pf/pose/odom' # then set goals with RViz "2D Goal Pose"
+    goal_topic: '/goal_pose'
+    scan_topic: '/scan'
+    drive_topic: '/drive'
+
+raceline_mpc:
+  ros__parameters:
+    scan_topic: '/scan'
+    odom_topic: '/pf/pose/odom' # map-frame pose from your localization
+    drive_topic: '/drive'
+    imu_topic: '/oakd/imu'      # enables the traction governor
+    speed_scale_topic: '/supervisor/speed_scale'  # DEGRADED -> slow down
+    enable_behavior: false      # head-to-head: GB_TRACK/TRAILING/OVERTAKE
+    opponent_topic: '/camera_opponents_poses'  # (turn on for races with
+                                # opponents; solo time-trial path unchanged)
+    actuation_delay: 0.10       # s latency — measure it: data_logger +
+                                # tools/sysid_report.py (S-turn drive)
+    max_lat_accel: 6.0          # m/s^2 grip budget (governor + profiler)
+    aeb_decel: 6.0              # m/s^2 assumed braking for dynamic AEB range
+    refine_corridor: 0.25       # m wall margin for min-curvature refinement
+    refine_use_map: true        # occupancy-aware per-side corridors: -3.8 s/lap
+    refine_cap: 1.2             # with GUARANTEED >= margin wall clearance
+    map_yaml: ''                # '' = auto-find the map matching the raceline
+    reprofile_speeds: true      # friction-limited speeds from curvature at load
+    profile_a_accel: 4.0        # m/s^2 engine limit
+    profile_a_brake: 8.0        # m/s^2 braking limit
+    profile_v_max: 8.0          # m/s profile ceiling
+    v_scale: 0.5                # global speed cap — raise as confidence grows
+    control_hz: 50.0

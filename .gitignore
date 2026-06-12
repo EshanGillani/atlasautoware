@@ -132,3 +132,5 @@ dmypy.json
 
 # Transient runtime telemetry / live map (regenerated)
 runtime/
+
+.claude/

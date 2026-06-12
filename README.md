@@ -1,160 +1,142 @@
-# F1TENTH gym environment ROS2 communication bridge
-This is a containerized ROS communication bridge for the F1TENTH gym environment that turns it into a simulation in ROS2.
+# AtlasAutoware — F1TENTH/RoboRacer autonomous racing stack
 
-# Installation
+A complete ROS 2 racing stack for 1/10-scale autonomous racing: simulation
+bridge, SLAM mapping, raceline optimization, an OSQP-based MPC racing
+controller with lidar AEB and an IMU traction governor, camera opponent
+detection, and a hardware bringup layer (Jetson + OAK-D Pro + RPLidar + VESC)
+so the same nodes that win in sim drive the physical car.
 
-**Supported System:**
+Built on the [f1tenth_gym_ros](https://github.com/f1tenth/f1tenth_gym_ros)
+simulation bridge (ROS 2 Foxy).
 
-- Ubuntu (tested on 20.04) native with ROS 2
-- Ubuntu (tested on 20.04) with an NVIDIA gpu and nvidia-docker2 support
-- Windows 10, macOS, and Ubuntu without an NVIDIA gpu (using noVNC)
-
-This installation guide will be split into instruction for installing the ROS 2 package natively, and for systems with or without an NVIDIA gpu in Docker containers.
-
-## Native on Ubuntu 20.04
-
-**Install the following dependencies:**
-- **ROS 2** Follow the instructions [here](https://docs.ros.org/en/foxy/Installation.html) to install ROS 2 Foxy.
-- **F1TENTH Gym**
-  ```bash
-  git clone https://github.com/f1tenth/f1tenth_gym
-  cd f1tenth_gym && pip3 install -e .
-  ```
-
-**Installing the simulation:**
-- Create a workspace: ```cd $HOME && mkdir -p sim_ws/src```
-- Clone the repo into the workspace:
-  ```bash
-  cd $HOME/sim_ws/src
-  git clone https://github.com/f1tenth/f1tenth_gym_ros
-  ```
-- Update correct parameter for path to map file:
-  Go to `sim.yaml` [https://github.com/f1tenth/f1tenth_gym_ros/blob/main/config/sim.yaml](https://github.com/f1tenth/f1tenth_gym_ros/blob/main/config/sim.yaml) in your cloned repo, change the `map_path` parameter to point to the correct location. It should be `'<your_home_dir>/sim_ws/src/f1tenth_gym_ros/maps/levine'`
-- Install dependencies with rosdep:
-  ```bash
-  source /opt/ros/foxy/setup.bash
-  cd ..
-  rosdep install -i --from-path src --rosdistro foxy -y
-  ```
-- Build the workspace: ```colcon build```
-
-## With an NVIDIA gpu:
-
-**Install the following dependencies:**
-
-- **Docker** Follow the instructions [here](https://docs.docker.com/install/linux/docker-ce/ubuntu/) to install Docker. A short tutorial can be found [here](https://docs.docker.com/get-started/) if you're not familiar with Docker. If you followed the post-installation steps you won't have to prepend your docker and docker-compose commands with sudo.
-- **nvidia-docker2**, follow the instructions [here](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) if you have a support GPU. It is also possible to use Intel integrated graphics to forward the display, see details instructions from the Rocker repo. If you are on windows with an NVIDIA GPU, you'll have to use WSL (Windows Subsystem for Linux). Please refer to the guide [here](https://developer.nvidia.com/cuda/wsl), [here](https://docs.nvidia.com/cuda/wsl-user-guide/index.html), and [here](https://dilililabs.com/zh/blog/2021/01/26/deploying-docker-with-gpu-support-on-windows-subsystem-for-linux/).
-- **rocker** [https://github.com/osrf/rocker](https://github.com/osrf/rocker). This is a tool developed by OSRF to run Docker images with local support injected. We use it for GUI forwarding. If you're on Windows, WSL should also support this.
-
-**Installing the simulation:**
-
-1. Clone this repo
-2. Build the docker image by:
-```bash
-$ cd f1tenth_gym_ros
-$ docker build -t f1tenth_gym_ros -f Dockerfile .
 ```
-3. To run the containerized environment, start a docker container by running the following. (example showned here with nvidia-docker support). By running this, the current directory that you're in (should be `f1tenth_gym_ros`) is mounted in the container at `/sim_ws/src/f1tenth_gym_ros`. Which means that the changes you make in the repo on the host system will also reflect in the container.
-```bash
-$ rocker --nvidia --x11 --volume .:/sim_ws/src/f1tenth_gym_ros -- f1tenth_gym_ros
+                 ┌── sim:  gym_bridge (f1tenth_gym) ──────────────┐
+sensors ─────────┤                                                ├──► /scan, odom, /oakd/*
+                 └── car:  rplidar_node · oakd_camera · drive_node┘
+                                            ▲
+map ─► slam_toolbox ─► raceline_optimizer ─► raceline_mpc (MPC + AEB + traction governor) ─► /drive
+                                            │
+                       camera_perception ───┘ (YOLO opponent detection, optional)
 ```
 
-## Without an NVIDIA gpu:
+## The racing pipeline
 
-**Install the following dependencies:**
+1. **Map** the track: `ros2 launch f1tenth_gym_ros slam_mapping_launch.py`
+   driving slowly (or `mapping_driver` autonomously) — see
+   [docs/mapping.md](docs/mapping.md).
+2. **Optimize** a raceline: `raceline_optimizer` / `track_learner` produce
+   `racelines/*.csv` (x, y, heading, curvature, speed); inspect with
+   `tools/draw_raceline.py`.
+3. **Profile** the speeds: `tools/reprofile_raceline.py` (or
+   `reprofile_speeds: true` at runtime) replaces the speed column with the
+   TUMFTM friction-limited forward-backward profile, so commanded speeds
+   provably fit the grip budget — see
+   [docs/racing_tech.md](docs/racing_tech.md).
+4. **Race**: `raceline_mpc` tracks the line with a kinematic LTV-MPC
+   (persistent warm-started OSQP solve, ~0.6 ms/tick), falls back to the
+   MAP controller (Becker et al., ICRA 2023 — tire-aware pursuit) on any
+   solver hiccup, brakes for obstacles with a speed-aware AEB, and scales
+   speed when the IMU says grip is running out — see
+   [docs/mpc.md](docs/mpc.md) and [docs/racing_tech.md](docs/racing_tech.md).
 
-If your system does not support nvidia-docker2, noVNC will have to be used to forward the display.
-- Again you'll need **Docker**. Follow the instruction from above.
-- Additionally you'll need **docker-compose**. Follow the instruction [here](https://docs.docker.com/compose/install/) to install docker-compose.
+Racing nodes: `raceline_mpc` (competition time-trial), `race_agent` /
+`racing_agent` (full strategy + opponents), `opponent_driver`,
+`camera_perception` ([docs/camera_perception.md](docs/camera_perception.md)).
+Tooling: `tools/auto_tune.py`, `tools/benchmark_lap.py`, and a live dashboard
+([docs/dashboard.md](docs/dashboard.md)).
 
-**Installing the simulation:**
+## Quickstart — simulation
 
-1. Clone this repo 
-2. Bringup the novnc container and the sim container with docker-compose:
+Supported: Ubuntu native with ROS 2 Foxy, or any OS via Docker (NVIDIA GPU
+with `rocker`, or noVNC without).
+
+**Native (Ubuntu + ROS 2 Foxy):**
+```bash
+# dependencies
+git clone https://github.com/f1tenth/f1tenth_gym && cd f1tenth_gym && pip3 install -e . && cd ..
+# workspace
+mkdir -p $HOME/sim_ws/src && cd $HOME/sim_ws/src
+git clone <this repo>
+# point map_path in config/sim.yaml at <your_home>/sim_ws/src/atlasautoware/maps/levine
+cd $HOME/sim_ws
+rosdep install -i --from-path src --rosdistro foxy -y
+colcon build
+source /opt/ros/foxy/setup.bash && source install/local_setup.bash
+ros2 launch f1tenth_gym_ros gym_bridge_launch.py
+```
+
+**Docker (NVIDIA GPU):**
+```bash
+docker build -t f1tenth_gym_ros -f Dockerfile .
+rocker --nvidia --x11 --volume .:/sim_ws/src/f1tenth_gym_ros -- f1tenth_gym_ros
+```
+
+**Docker (no GPU, noVNC):**
 ```bash
 docker-compose up
-``` 
-3. In a separate terminal, run the following, and you'll have the a bash session in the simulation container. `tmux` is available for convenience.
-```bash
+# second terminal:
 docker exec -it f1tenth_gym_ros-sim-1 /bin/bash
+# browser: http://localhost:8080/vnc.html → Connect, then launch as above
 ```
-4. In your browser, navigate to [http://localhost:8080/vnc.html](http://localhost:8080/vnc.html), you should see the noVNC logo with the connect button. Click the connect button to connect to the session.
 
-# Launching the Simulation
+Use `headless_bridge_launch.py` instead of `gym_bridge_launch.py` for
+benchmarking/auto-tuning without rviz.
 
-1. `tmux` is included in the contianer, so you can create multiple bash sessions in the same terminal.
-2. To launch the simulation, make sure you source both the ROS2 setup script and the local workspace setup script. Run the following in the bash session from the container:
+## Quickstart — real car
+
+Jetson + OAK-D Pro (RGB + 200 Hz IMU) + RPLidar + VESC. Actuation goes
+through a PCA9685 PWM board into the VESC's PPM input **or** direct VESC
+UART — `drive_node` probes both at startup and uses what it finds:
+
 ```bash
-$ source /opt/ros/foxy/setup.bash
-$ source install/local_setup.bash
-$ ros2 launch f1tenth_gym_ros gym_bridge_launch.py
+pip3 install depthai rplidar-roboticia smbus2 pyserial
+ros2 launch f1tenth_gym_ros car_bringup_launch.py
 ```
-A rviz window should pop up showing the simulation either on your host system or in the browser window depending on the display forwarding you chose.
 
-You can then run another node by creating another bash session in `tmux`.
+Calibration (steering trim, `erpm_gain`, speed scaling) lives in
+`config/hardware.yaml`. Wiring, VESC Tool setup, and the first-drive
+calibration order are in [docs/hardware.md](docs/hardware.md). Both actuation
+paths carry an arming hold, a command watchdog, and neutral-on-shutdown.
+YOLO opponent detection auto-selects its accelerator — TensorRT on the
+Jetson GPU, cv2-CUDA, the OAK-D's onboard VPU, or CPU fallback — see
+[docs/racing_tech.md](docs/racing_tech.md).
 
-# Configuring the simulation
-- The configuration file for the simulation is at `f1tenth_gym_ros/config/sim.yaml`.
-- Topic names and namespaces can be configured but is recommended to leave uncahnged.
-- The map can be changed via the `map_path` parameter. You'll have to use the full path to the map file in the container. The map follows the ROS convention. It is assumed that the image file and the `yaml` file for the map are in the same directory with the same name. See the note below about mounting a volume to see where to put your map file.
-- The `num_agent` parameter can be changed to either 1 or 2 for single or two agent racing.
-- The ego and opponent starting pose can also be changed via parameters, these are in the global map coordinate frame.
+## Configuration
 
-The entire directory of the repo is mounted to a workspace `/sim_ws/src` as a package. All changes made in the repo on the host system will also reflect in the container. After changing the configuration, run `colcon build` again in the container workspace to make sure the changes are reflected.
+- `config/sim.yaml` — simulation: `map_path`, `num_agent` (1 or 2), start
+  poses, `kb_teleop` (then `ros2 run teleop_twist_keyboard
+  teleop_twist_keyboard`: `i`/`u`/`o` forward, `,`/`m`/`.` reverse, `k` stop).
+- `config/hardware.yaml` — drive backend + sensor + racing parameters for the
+  car.
+- `config/slam_mapping.yaml` — mapping session settings.
 
-# Topics published by the simulation
+## Topics
 
-In **single** agent:
+| Topic | Type | Direction |
+|---|---|---|
+| `/scan` | LaserScan | sim bridge / rplidar_node → stack |
+| `/ego_racecar/odom` (sim) · `/pf/pose/odom` (car) | Odometry | localization → controllers |
+| `/oakd/rgb`, `/oakd/camera_info` | Image, CameraInfo | oakd_camera → camera_perception |
+| `/oakd/imu` | Imu | oakd_camera → traction governor |
+| `/vesc/odom` | Odometry | drive_node (UART backend) → particle filter |
+| `/drive` | AckermannDriveStamped | controllers → sim bridge / drive_node |
+| `/map`, `tf` | — | map server / SLAM |
 
-`/scan`: The ego agent's laser scan
+Two-agent sim additionally has `/opp_scan`, `/opp_drive`,
+`/opp_racecar/odom`, and mirrored `opp_odom` topics; reset poses via RViz's
+*2D Pose Estimate* (`/initialpose`) and *2D Goal Pose* tools.
 
-`/ego_racecar/odom`: The ego agent's odometry
+## Tests
 
-`/map`: The map of the environment
-
-A `tf` tree is also maintained.
-
-In **two** agents:
-
-In addition to the topics available in the single agent scenario, these topics are also available:
-
-`/opp_scan`: The opponent agent's laser scan
-
-`/ego_racecar/opp_odom`: The opponent agent's odometry for the ego agent's planner
-
-`/opp_racecar/odom`: The opponent agents' odometry
-
-`/opp_racecar/opp_odom`: The ego agent's odometry for the opponent agent's planner
-
-# Topics subscribed by the simulation
-
-In **single** agent:
-
-`/drive`: The ego agent's drive command via `AckermannDriveStamped` messages
-
-`/initalpose`: This is the topic for resetting the ego's pose via RViz's 2D Pose Estimate tool. Do **NOT** publish directly to this topic unless you know what you're doing.
-
-TODO: kb teleop topics
-
-In **two** agents:
-
-In addition to all topics in the single agent scenario, these topics are also available:
-
-`/opp_drive`: The opponent agent's drive command via `AckermannDriveStamped` messages. Note that you'll need to publish to **both** the ego's drive topic and the opponent's drive topic for the cars to move when using 2 agents.
-
-`/goal_pose`: This is the topic for resetting the opponent agent's pose via RViz's 2D Goal Pose tool. Do **NOT** publish directly to this topic unless you know what you're doing.
-
-# Keyboard Teleop
-
-The keyboard teleop node from `teleop_twist_keyboard` is also installed as part of the simulation's dependency. To enable keyboard teleop, set `kb_teleop` to `True` in `sim.yaml`. After launching the simulation, in another terminal, run:
 ```bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard
+python3 -m pytest tests/ -q        # pure-logic: MPC, race brain, hardware drivers
+python3 tests/test_mpc.py          # closed-loop MPC validation + solve-time budget
 ```
-Then, press `i` to move forward, `u` and `o` to move forward and turn, `,` to move backwards, `m` and `.` to move backwards and turn, and `k` to stop in the terminal window running the teleop node.
 
-# Developing and creating your own agent in ROS 2
+`tests/test_hardware.py` covers the PCA9685 register/pulse maths, the VESC
+UART protocol, drive-backend auto-detection, lidar scan binning, and the
+traction governor — no hardware or ROS needed.
 
-There are multiple ways to launch your own agent to control the vehicles.
+## License
 
-- The first one is creating a new package for your agent in the `/sim_ws` workspace inside the sim container. After launch the simulation, launch the agent node in another bash session while the sim is running.
-- The second one is to create a new ROS 2 container for you agent node. Then create your own package and nodes inside. Launch the sim container and the agent container both. With default networking configurations for `docker`, the behavior is to put The two containers on the same network, and they should be able to discover and talk to each other on different topics. If you're using noVNC, create a new service in `docker-compose.yml` for your agent node. You'll also have to put your container on the same network as the sim and novnc containers.
+MIT — see [LICENSE](LICENSE).

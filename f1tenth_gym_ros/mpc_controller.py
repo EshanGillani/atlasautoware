@@ -44,6 +44,58 @@ except Exception:                              # pragma: no cover
     _HAVE_OSQP = False
 
 
+def predict_state(x, y, yaw, v, steer, v_cmd, delay, wheelbase,
+                  a_accel=4.0, a_brake=8.0, dt=0.01):
+    """Forward-predict the pose by the actuation latency (delay compensation).
+
+    By the time a command reaches the wheels (serial links, servo lag, ESC
+    ramp — typically 50-150 ms on a real car) the car is no longer where the
+    controller planned from, so every solve chases a stale state.  The fix
+    every race stack uses: integrate the kinematic bicycle forward by the
+    measured delay under the *last commanded* steer + speed target, and solve
+    from the predicted state instead.  Costs microseconds; pure (no ROS).
+    """
+    steps = int(round(float(delay) / dt))
+    for _ in range(steps):
+        a = min(max((v_cmd - v) / dt, -a_brake), a_accel)
+        x += v * math.cos(yaw) * dt
+        y += v * math.sin(yaw) * dt
+        yaw += v * math.tan(steer) / wheelbase * dt
+        v = max(0.0, v + a * dt)
+    return x, y, yaw, v
+
+
+class TractionGovernor:
+    """Speed governor from measured yaw rate — the IMU's seat in the control loop.
+
+    The raceline speeds come from an *assumed* friction budget; the IMU reports
+    the lateral acceleration the car is actually pulling (a_lat = |yaw_rate|·v,
+    valid while the tires hold).  When the measured a_lat exceeds `max_lat_accel`
+    the commanded speed is scaled down proportionally, then recovered gradually —
+    so a too-optimistic raceline or a low-grip patch costs a little speed instead
+    of the lap.  Using yaw rate (gyro z) keeps it agnostic to IMU mounting sign
+    and accelerometer bias.
+    """
+
+    def __init__(self, max_lat_accel=6.0, alpha=0.3, min_scale=0.6,
+                 recover=0.02):
+        self.max_lat = float(max_lat_accel)
+        self.alpha = float(alpha)       # low-pass on the a_lat estimate
+        self.min_scale = float(min_scale)
+        self.recover = float(recover)   # scale regained per update when gripping
+        self.scale = 1.0
+        self._lat = 0.0
+
+    def update(self, yaw_rate, speed):
+        """Latest gyro yaw rate (rad/s) + speed (m/s) -> speed scale in (0, 1]."""
+        self._lat += self.alpha * (abs(yaw_rate) * max(speed, 0.0) - self._lat)
+        if self._lat > self.max_lat:
+            self.scale = max(self.min_scale, self.max_lat / self._lat)
+        else:
+            self.scale = min(1.0, self.scale + self.recover)
+        return self.scale
+
+
 class KinematicMPC:
     NZ = 4                                      # state dim  [x, y, yaw, v]
     NU = 2                                      # input dim  [steer, accel]
@@ -51,7 +103,7 @@ class KinematicMPC:
     def __init__(self, wheelbase=0.33, horizon=12, dt=0.08,
                  max_steer=0.41, max_accel=4.0, max_brake=8.0,
                  v_min=0.0, v_max=8.0,
-                 q_pos=14.0, q_yaw=6.0, q_v=2.5,
+                 q_pos=28.0, q_yaw=6.0, q_v=2.5,
                  r_steer=1.0, r_accel=0.2,
                  rd_steer=12.0, rd_accel=0.5):
         self.L = float(wheelbase)
@@ -71,6 +123,10 @@ class KinematicMPC:
         self._u_prev = np.zeros(self.NU)        # last applied [steer, accel]
         # raceline (set via set_raceline)
         self._rl = None
+        # persistent QP (built lazily on first solve)
+        self._qp = None
+        if self.available:
+            self._setup_qp_structure()
 
     # ── raceline geometry ──────────────────────────────────────────────────────
     def set_raceline(self, x, y, hdg, curv, speed):
@@ -152,6 +208,86 @@ class KinematicMPC:
         g = f - A @ z - B @ u                                # affine offset
         return A, B, g
 
+    # ── persistent QP structure ────────────────────────────────────────────────
+    # The horizon, weights, and constraint topology never change between ticks —
+    # only the *values* do (reference q, linearized dynamics in A, bounds).  So
+    # the cost matrix P and the sparsity pattern of A are built exactly once, the
+    # solver keeps its symbolic factorization, and each tick is a cheap
+    # update(q, Ax, l, u) + warm-started solve instead of a full OSQP setup.
+    def _setup_qp_structure(self):
+        N, nz, nu = self.N, self.NZ, self.NU
+        nZ = nz * (N + 1)
+        nv = nZ + nu * N
+        n_eq = nz * (N + 1)
+        n_in = nu * N + (N + 1)
+
+        # P is constant: tracking weights + input + input-rate coupling
+        P = np.zeros((nv, nv))
+        for k in range(N + 1):
+            i = k * nz
+            P[i:i + nz, i:i + nz] += 2.0 * (self.Qf if k == N else self.Q)
+        for k in range(N):
+            j = nZ + k * nu
+            P[j:j + nu, j:j + nu] += 2.0 * self.R + 2.0 * self.Rd
+            if k > 0:
+                jp = nZ + (k - 1) * nu
+                P[jp:jp + nu, jp:jp + nu] += 2.0 * self.Rd
+                P[j:j + nu, jp:jp + nu] += -2.0 * self.Rd
+                P[jp:jp + nu, j:j + nu] += -2.0 * self.Rd
+        self._P_csc = sp.csc_matrix(np.triu(P))
+
+        # A's dense buffer: constant blocks filled once, only -A_k/-B_k rewritten
+        self._Ad = np.zeros((n_eq + n_in, nv))
+        self._Ad[:nz, :nz] = np.eye(nz)                       # z0 pin
+        row = nz
+        for k in range(N):
+            ik1 = (k + 1) * nz
+            self._Ad[row:row + nz, ik1:ik1 + nz] = np.eye(nz)
+            row += nz
+        for k in range(N):                                    # input box
+            j = nZ + k * nu
+            self._Ad[row, j] = 1.0
+            self._Ad[row + 1, j + 1] = 1.0
+            row += nu
+        for k in range(N + 1):                                # speed box
+            self._Ad[row, k * nz + 3] = 1.0
+            row += 1
+
+        # structural sparsity template: mark every entry the linearization can
+        # touch (incl. ones currently zero, e.g. sin(psi)=0) so the CSC pattern
+        # is identical every tick — a hard OSQP update() requirement.
+        Sa = np.eye(nz)
+        Sa[0, 2] = Sa[0, 3] = Sa[1, 2] = Sa[1, 3] = Sa[2, 3] = 1.0
+        Sb = np.zeros((nz, nu)); Sb[2, 0] = Sb[3, 1] = 1.0
+        T = (self._Ad != 0.0).astype(float)
+        row = nz
+        for k in range(N):
+            ik, jk = k * nz, nZ + k * nu
+            T[row:row + nz, ik:ik + nz] = Sa
+            T[row:row + nz, jk:jk + nu] = Sb
+            row += nz
+        Tc = sp.csc_matrix(T)
+        self._A_indices = Tc.indices.copy()
+        self._A_indptr = Tc.indptr.copy()
+        # (row, col) of each CSC data slot, for value extraction from the dense A
+        self._A_coords = (Tc.indices,
+                          np.repeat(np.arange(nv), np.diff(Tc.indptr)))
+
+        # constant bound segments (input + speed boxes)
+        self._lo = np.zeros(n_eq + n_in)
+        self._hi = np.zeros(n_eq + n_in)
+        row = n_eq
+        for k in range(N):
+            self._lo[row], self._hi[row] = -self.max_steer, self.max_steer
+            self._lo[row + 1], self._hi[row + 1] = -self.max_brake, self.max_accel
+            row += nu
+        self._lo[row:], self._hi[row:] = self.v_min, self.v_max
+        # constant pieces of q (diagonal weights for vectorized fill)
+        self._q = np.zeros(nv)
+        self._qdiag = np.tile(np.diag(self.Q), N + 1)
+        self._qdiag[-nz:] = np.diag(self.Qf)
+        self._rdiag = np.tile(np.diag(self.R), N)
+
     # ── solve one MPC step ─────────────────────────────────────────────────────
     def solve(self, state, nearest, offset=0.0):
         """state=(x,y,yaw,v). Returns (steer, v_target) or None on failure."""
@@ -165,73 +301,42 @@ class KinematicMPC:
         z_init = np.array([x0, y0, yaw0, v0])
 
         nZ = nz * (N + 1)
-        nU = nu * N
-        nv = nZ + nU
 
-        # ── cost  0.5 xᵀP x + qᵀx ──────────────────────────────────────────────
-        P = np.zeros((nv, nv))
-        q = np.zeros(nv)
-        for k in range(N + 1):
-            Qk = self.Qf if k == N else self.Q
-            i = k * nz
-            P[i:i + nz, i:i + nz] += 2.0 * Qk
-            q[i:i + nz] += -2.0 * Qk @ zr[k]
-        for k in range(N):
-            j = nZ + k * nu
-            P[j:j + nu, j:j + nu] += 2.0 * self.R
-            q[j:j + nu] += -2.0 * self.R @ ur[k]
-        # input-rate penalty (incl. continuity with the last applied command)
-        for k in range(N):
-            j = nZ + k * nu
-            P[j:j + nu, j:j + nu] += 2.0 * self.Rd
-            if k == 0:
-                q[j:j + nu] += -2.0 * self.Rd @ self._u_prev
-            else:
-                jp = nZ + (k - 1) * nu
-                P[jp:jp + nu, jp:jp + nu] += 2.0 * self.Rd
-                P[j:j + nu, jp:jp + nu] += -2.0 * self.Rd
-                P[jp:jp + nu, j:j + nu] += -2.0 * self.Rd
+        # ── linear cost  q (P is constant, set up once) ────────────────────────
+        q = self._q
+        q[:nZ] = -2.0 * (zr * self._qdiag.reshape(N + 1, nz)).ravel()
+        q[nZ:] = -2.0 * (ur * self._rdiag.reshape(N, nu)).ravel()
+        q[nZ:nZ + nu] += -2.0 * self.Rd @ self._u_prev      # rate continuity
 
-        # ── constraints ────────────────────────────────────────────────────────
-        # equalities: initial state + dynamics;  inequalities: input + speed box
-        n_eq = nz * (N + 1)
-        n_in = nu * N + (N + 1)
-        A = np.zeros((n_eq + n_in, nv))
-        lo = np.zeros(n_eq + n_in)
-        hi = np.zeros(n_eq + n_in)
-        # z0 = z_init
-        A[:nz, :nz] = np.eye(nz)
+        # ── constraint values: dynamics blocks + bounds ────────────────────────
+        lo, hi = self._lo, self._hi
         lo[:nz] = hi[:nz] = z_init
-        # z_{k+1} = A_k z_k + B_k u_k + g_k
         row = nz
         for k in range(N):
             Ak, Bk, gk = self._linearize(zr[k], ur[k])
-            ik, ik1 = k * nz, (k + 1) * nz
-            jk = nZ + k * nu
-            A[row:row + nz, ik1:ik1 + nz] = np.eye(nz)
-            A[row:row + nz, ik:ik + nz] = -Ak
-            A[row:row + nz, jk:jk + nu] = -Bk
+            ik, jk = k * nz, nZ + k * nu
+            self._Ad[row:row + nz, ik:ik + nz] = -Ak
+            self._Ad[row:row + nz, jk:jk + nu] = -Bk
             lo[row:row + nz] = hi[row:row + nz] = gk
             row += nz
-        # input box:  -max_steer ≤ δ ≤ max_steer ;  -max_brake ≤ a ≤ max_accel
-        for k in range(N):
-            j = nZ + k * nu
-            A[row, j] = 1.0;     lo[row] = -self.max_steer; hi[row] = self.max_steer
-            A[row + 1, j + 1] = 1.0; lo[row + 1] = -self.max_brake; hi[row + 1] = self.max_accel
-            row += nu
-        # speed box on each state:  v_min ≤ v_k ≤ v_max
-        for k in range(N + 1):
-            A[row, k * nz + 3] = 1.0
-            lo[row] = self.v_min; hi[row] = self.v_max
-            row += 1
+        A_data = self._Ad[self._A_coords]
 
         try:
-            prob = osqp.OSQP()
-            prob.setup(P=sp.csc_matrix(np.triu(P)), q=q, A=sp.csc_matrix(A),
-                       l=lo, u=hi, verbose=False, warm_start=True,
-                       max_iter=4000, eps_abs=1e-3, eps_rel=1e-3)
-            res = prob.solve()
+            if self._qp is None:
+                self._qp = osqp.OSQP()
+                A_csc = sp.csc_matrix(
+                    (A_data, self._A_indices, self._A_indptr),
+                    shape=self._Ad.shape)
+                # tighter tolerance than the old per-tick setup: the persistent
+                # warm-started solver converges in a few iterations anyway
+                self._qp.setup(P=self._P_csc, q=q, A=A_csc, l=lo, u=hi,
+                               verbose=False, warm_start=True, polish=True,
+                               max_iter=4000, eps_abs=1e-4, eps_rel=1e-4)
+            else:
+                self._qp.update(q=q, Ax=A_data, l=lo, u=hi)
+            res = self._qp.solve()
         except Exception:
+            self._qp = None                     # rebuild from scratch next tick
             return None
         if res.info.status_val not in (1, 2):   # 1 solved, 2 solved_inaccurate
             return None
