@@ -65,6 +65,9 @@ def main():
     ap.add_argument('--raceline', default=os.path.join(REPO, 'racelines', 'comp_raceline.csv'))
     ap.add_argument('--v-scale', type=float, default=1.1)
     ap.add_argument('--laps', type=int, default=3, help='laps to attempt')
+    ap.add_argument('--start-idx', type=int, default=0, help='raceline index to spawn at')
+    ap.add_argument('--launch-time', type=float, default=1.5,
+                    help='seconds to ramp from rest to full speed (standing start)')
     ap.add_argument('--render', action='store_true')
     args = ap.parse_args()
 
@@ -83,10 +86,12 @@ def main():
         raise SystemExit(f'env creation failed ({e}); paste this and I will match '
                          f'your f110_gym version')
 
-    sx, sy, st = float(rx[0]), float(ry[0]), float(rh[0])
+    s0 = args.start_idx % n
+    sx, sy, st = float(rx[s0]), float(ry[s0]), float(rh[s0])
     obs = _unpack_reset(env.reset(np.array([[sx, sy, st]])))
 
-    prev_j = cum = 0
+    prev_j = s0
+    cum = 0
     t = 0.0
     dt = 0.01                                   # f110_gym default timestep
     collided = False
@@ -105,6 +110,10 @@ def main():
 
         out = mpc.solve((x, y, yaw, v), nearest)
         steer, v_t = out if out is not None else (0.0, v)
+        # standing-start launch ramp: ease 0 -> full speed so the car gets onto
+        # the line before demanding race pace (a real start is from rest too).
+        ramp = min(1.0, 0.15 + t / max(args.launch_time, 1e-3))
+        v_t *= ramp
         obs, done = _unpack_step(env.step(np.array([[float(steer), float(v_t)]])))
         t += dt
         if args.render:
