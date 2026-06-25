@@ -54,6 +54,8 @@ def main():
     ap.add_argument('--max-heading', type=float, default=0.30, help='start yaw err (rad)')
     ap.add_argument('--delay', type=float, default=0.0, help='actuation delay (s)')
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--flying-start', action='store_true',
+                    help='begin at the reference speed (flying lap) not 2 m/s')
     # ── MPC weight overrides (defaults match KinematicMPC) ─────────────────────
     ap.add_argument('--horizon', type=int, default=12, help='MPC preview steps')
     ap.add_argument('--dt', type=float, default=0.08, help='MPC step (s)')
@@ -68,7 +70,8 @@ def main():
     print(f'raceline: {n_pts} pts, base v {rspeed.min():.1f}-{rspeed.max():.1f} m/s '
           f'| {args.n} trials/scale | wall {args.wall} m | delay {args.delay*1000:.0f} ms')
     print(f'MPC: horizon {args.horizon} dt {args.dt} | q_pos {args.q_pos} '
-          f'q_yaw {args.q_yaw} rd_steer {args.rd_steer}\n')
+          f'q_yaw {args.q_yaw} rd_steer {args.rd_steer} | '
+          f'start {"flying" if args.flying_start else "cold 2 m/s"}\n')
 
     rng = np.random.default_rng(args.seed)
     # same perturbation set across scales (fair comparison)
@@ -88,12 +91,13 @@ def main():
                            rd_steer=args.rd_steer)
         mpc.set_raceline(rx, ry, rh, rc, speeds)
         ctrl = make_control_fn(mpc)
+        v0 = float(speeds[0]) if args.flying_start else 2.0   # flying vs cold start
 
         ok, lap_times, xte_means, xte_maxes, worst = 0, [], [], [], 0.0
         fail_idxs = []
         for (dx, dy, dyaw) in starts:
             r = cl.run_lap(ctrl, rx, ry, rh, start_offset=(dx, dy, dyaw),
-                           actuator_delay=args.delay)
+                           v0=v0, actuator_delay=args.delay)
             xte = r['xte']
             xmax = float(xte.max()) if len(xte) else float('inf')
             if r['completed'] and xmax < args.wall:
