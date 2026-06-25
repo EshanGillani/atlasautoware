@@ -41,17 +41,19 @@ bridge:
     scan_fov: 4.7
     scan_beams: 1080
 
-    # map parameters
-    map_path: '/sim_ws/src/f1tenth_gym_ros/maps/Spielberg_map'
+    # map parameters — the competition track (raceline is built for this).
+    # NOTE: absolute path. Container: /sim_ws/src/f1tenth_gym_ros/maps/comp_track
+    #       native box: set to <repo>/maps/comp_track (e.g. /home/eshan/atlasautoware/maps/comp_track)
+    map_path: '/sim_ws/src/f1tenth_gym_ros/maps/comp_track'
     map_img_ext: '.png'
 
     # opponent parameters
     num_agent: 1
 
-    # ego starting pose on map
-    sx: 0.0
-    sy: 0.0
-    stheta: 0.0
+    # ego starting pose on map — comp_track raceline start (row 0 of comp_raceline.csv)
+    sx: 49.8147
+    sy: 62.23
+    stheta: -2.6386
 
     # opp starting pose on map
     sx1: 2.0
