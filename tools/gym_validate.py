@@ -69,6 +69,7 @@ def main():
     ap.add_argument('--launch-time', type=float, default=1.5,
                     help='seconds to ramp from rest to full speed (standing start)')
     ap.add_argument('--render', action='store_true')
+    ap.add_argument('--debug', action='store_true', help='dump first 30 steps')
     args = ap.parse_args()
 
     rx, ry, rh, rc, rspeed = cl.load_raceline(args.raceline)
@@ -89,9 +90,15 @@ def main():
     s0 = args.start_idx % n
     sx, sy, st = float(rx[s0]), float(ry[s0]), float(rh[s0])
     obs = _unpack_reset(env.reset(np.array([[sx, sy, st]])))
+    if args.debug:
+        print(f'requested spawn ({sx:.2f},{sy:.2f},{st:.2f}) | '
+              f'env placed ({scalar(obs["poses_x"]):.2f},{scalar(obs["poses_y"]):.2f},'
+              f'{scalar(obs["poses_theta"]):.2f})')
+        print(' step    t    x      y     yaw     v   near  steer  v_cmd')
 
     prev_j = s0
     cum = 0
+    step_i = 0
     t = 0.0
     dt = 0.01                                   # f110_gym default timestep
     collided = False
@@ -114,6 +121,10 @@ def main():
         # the line before demanding race pace (a real start is from rest too).
         ramp = min(1.0, 0.15 + t / max(args.launch_time, 1e-3))
         v_t *= ramp
+        if args.debug and step_i < 30:
+            print(f'{step_i:5d} {t:5.2f} {x:6.2f} {y:6.2f} {yaw:6.2f} {v:5.2f} '
+                  f'{nearest:5d} {steer:6.3f} {v_t:6.2f}')
+        step_i += 1
         obs, done = _unpack_step(env.step(np.array([[float(steer), float(v_t)]])))
         t += dt
         if args.render:
