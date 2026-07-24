@@ -50,6 +50,27 @@ python3 tools/reprofile_raceline.py racelines/best_raceline.csv --a-lat 6.0
 # (on by default in config/hardware.yaml, budget = max_lat_accel)
 ```
 
+The offline `raceline_optimizer` now writes its speed column with this **same**
+coupled profiler rather than a decoupled forward/backward pass, so the CSV
+speeds agree with what the car runs under `reprofile_speeds` and never ask for
+full brakes at max lateral load. (The old decoupled column read ~1 s/lap
+optimistic on comp_track because it allowed full braking mid-corner.)
+
+## Lap-time-oriented raceline (`raceline_optimizer.py --corner-priority`)
+
+A pure minimum-curvature line minimises Σκ², but lap time is `T = ∮ ds/v` and in
+a grip-limited corner `v = √(a_lat/κ)`, so `dt ∝ √κ` — the tightest corners
+dominate the lap and are exactly the points that go past the steering limit.
+`--corner-priority` (default `1.0`; `0` = pure min-curvature) weights the
+curvature term up where the track is tightest, so the QP spends the available
+width flattening the speed-limiting corners first (out-in-out) instead of
+sharing flatness evenly. On comp_track this cut the corners that exceed the
+steering budget from 4 to 2 and the estimated lap from ~45.1 s to ~44.6 s;
+on a near-constant-width track (Spielberg) the gain is marginal because there
+is no spare width to reshape. Corners physically narrower than the car's
+turning circle still can't be fixed by any line — widen the corridor or raise
+`max_steer`.
+
 This guarantees the speed the controller asks for is *achievable* — no more
 mid-corner overspeed for the traction governor to catch after the fact. The
 governor (live, IMU) and the profiler (planned, curvature) now share one
