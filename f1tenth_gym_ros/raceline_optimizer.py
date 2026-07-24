@@ -50,6 +50,15 @@ from PIL import Image
 from scipy import ndimage
 from scipy.interpolate import splev, splprep
 
+# Shared friction-ellipse speed profiler — the same coupled forward/backward
+# model the on-car reprofiler (velocity_profiler) and the MPCC use.  Dual import
+# so this file works both as `python -m f1tenth_gym_ros.raceline_optimizer` and
+# when the package dir is on sys.path (tools/, track_learner).
+try:
+    from .velocity_profiler import velocity_profile as _coupled_velocity_profile
+except ImportError:                                   # pragma: no cover
+    from velocity_profiler import velocity_profile as _coupled_velocity_profile
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Vehicle / dynamics defaults  (F1TENTH 1:10 scale)
@@ -376,21 +385,23 @@ def curvature_heading(xy):
 
 
 def velocity_profile(xy, curv, vp: VehicleParams):
+    """Friction-limited speeds along the line.
+
+    Delegates to the shared friction-ellipse profiler (velocity_profiler): the
+    lateral-grip corner cap, then coupled forward (accel) and backward (brake)
+    passes where the longitudinal share shrinks as lateral load approaches the
+    grip budget.  This is the same model the on-car reprofiler and the MPCC run,
+    so the speeds written here match what the car actually drives — instead of
+    the old decoupled passes that let the line ask for full brakes at max
+    lateral load (optimistic mid-corner).  Where a corner is tighter than the
+    car can steer, curv stays large so v collapses toward v_min automatically.
+    """
     n = len(xy)
     ds = np.array([np.hypot(*(xy[(i + 1) % n] - xy[i])) for i in range(n)])
-    # Corner-speed limit from lateral grip.  Where a corner is tighter than the
-    # car can steer (residual-infeasible point), curv is large so v collapses to
-    # v_min automatically — the car crawls through rather than running wide.
-    v = np.sqrt(vp.a_lat_max / np.maximum(curv, 1e-5))
-    v = np.clip(v, vp.v_min, vp.v_max)
-    for _ in range(2):                            # forward (accel) pass, wrapped
-        for i in range(n):
-            j = (i + 1) % n
-            v[j] = min(v[j], np.sqrt(v[i] ** 2 + 2 * vp.a_acc_max * ds[i]))
-    for _ in range(2):                            # backward (brake) pass, wrapped
-        for i in range(n - 1, -1, -1):
-            j = (i - 1) % n
-            v[j] = min(v[j], np.sqrt(v[i] ** 2 + 2 * vp.a_brk_max * ds[i]))
+    v = _coupled_velocity_profile(
+        curv, ds, a_lat_max=vp.a_lat_max, a_accel_max=vp.a_acc_max,
+        a_brake_max=vp.a_brk_max, v_max=vp.v_max, v_min=vp.v_min,
+        p=2.0, closed=True)
     return np.clip(v, vp.v_min, vp.v_max)
 
 
@@ -445,7 +456,7 @@ def save_overlay(path, grid, center_world, race_world, spd):
 
 def optimize(map_yaml, out_csv, seed_world=(0.0, 0.0), seed_heading=0.0, n_pts=None,
              spacing=0.4, vp: VehicleParams = None, overlay=True, verbose=True,
-             apex_bias=0.0):
+             apex_bias=0.0, corner_priority=0.0):
     vp = vp or VehicleParams()
 
     def log(*a):
@@ -496,6 +507,22 @@ def optimize(map_yaml, out_csv, seed_world=(0.0, 0.0), seed_heading=0.0, n_pts=N
         exit_emph = np.roll(cs, 4)                              # weight points after a corner
         exit_emph /= (exit_emph.max() + 1e-9)
         weights = 1.0 + apex_bias * exit_emph
+
+    # Lap-time priority.  A pure minimum-curvature line minimises sum(kappa^2),
+    # but lap time is T = integral ds/v and in a grip-limited corner
+    # v = sqrt(a_lat/kappa), so dt grows with sqrt(kappa): the tightest corners
+    # dominate the lap and set the infeasible points.  Weighting the curvature
+    # term up where the track is tightest makes the QP spend the available width
+    # flattening those corners first (out-in-out), trading a little flatness on
+    # already-fast sections for real speed where it counts.  corner_priority=0
+    # -> the pure minimum-curvature line.
+    if corner_priority > 0:
+        _, c_curv = curvature_heading(center_world)
+        cs = np.convolve(np.r_[c_curv[-5:], c_curv, c_curv[:5]],
+                         np.ones(5) / 5, 'same')[5:-5]          # smooth, periodic
+        corner_emph = cs / (cs.max() + 1e-9)
+        cp_w = 1.0 + corner_priority * corner_emph
+        weights = cp_w if weights is None else weights * cp_w
 
     # Feasibility-constrained min-curvature: the worst corner is guaranteed
     # drivable by the steering (or reported + slowed if the corridor can't fit).
@@ -566,6 +593,9 @@ def main():
                     help='extra wall clearance (m) kept on each side of the car')
     ap.add_argument('--apex-bias', type=float, default=0.0,
                     help='late-apex / exit-priority strength for overtaking (try 0.5-1.5)')
+    ap.add_argument('--corner-priority', type=float, default=1.0,
+                    help='lap-time weighting: flatten the tightest (speed-limiting) '
+                         'corners first (try 0.5-2.0; 0 = pure min-curvature)')
     ap.add_argument('--no-overlay', action='store_true')
     args = ap.parse_args()
 
@@ -575,7 +605,8 @@ def main():
     vp.safety_marg = args.margin
     optimize(args.map, args.output, seed_world=tuple(args.seed),
              seed_heading=args.heading, n_pts=args.points, vp=vp,
-             overlay=not args.no_overlay, apex_bias=args.apex_bias)
+             overlay=not args.no_overlay, apex_bias=args.apex_bias,
+             corner_priority=args.corner_priority)
 
 
 if __name__ == '__main__':
