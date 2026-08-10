@@ -68,9 +68,15 @@ class Job:
         self.returncode = None
         self.lines = []
         self._lock = threading.Lock()
+        # PYTHONUNBUFFERED is essential, not cosmetic: Python block-buffers
+        # stdout when it is a pipe rather than a terminal, so a long-running
+        # job (a tuning sweep, a training run) shows NOTHING in the dashboard
+        # until it exits — which reads as "the button is broken". Forcing
+        # line buffering makes progress stream as it happens.
+        env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
         self.proc = subprocess.Popen(
             argv, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1, errors='replace')
+            text=True, bufsize=1, errors='replace', env=env)
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):

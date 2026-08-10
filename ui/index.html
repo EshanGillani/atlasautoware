@@ -203,6 +203,9 @@
         <button class="btn stop" onclick="stopRace()">■ Stop</button>
         <span class="badge" id="mode" style="background:#21262d">—</span>
       </div>
+      <div id="racemsg" style="font-size:12px;color:var(--mut);margin-top:10px">
+        Needs ROS — either a running sim container or ROS 2 on this machine.
+        The pills in the header show which you have.</div>
       <div class="telem">
         <div class="tile"><div class="v" id="tSpeed">0.0</div><div class="k">speed m/s</div></div>
         <div class="tile"><div class="v" id="tLap">0</div><div class="k">lap</div></div>
@@ -227,10 +230,17 @@
   <div class="card" style="margin-bottom:16px">
     <h2>Bayesian tuning <small>each run teaches the model where to look next</small></h2>
     <div class="row" style="margin-top:0">
-      <button class="btn" onclick="runCmd('bayes-tune',[])">Start tuning</button>
+      <label style="margin:0;gap:6px;align-items:center">evaluations
+        <input type="text" id="tuneIters" value="25" style="width:56px"></label>
+      <label style="margin:0;gap:6px;align-items:center">laps each
+        <input type="text" id="tuneTrials" value="8" style="width:56px"></label>
+      <button class="btn" onclick="startTuning(false)">Start tuning</button>
+      <button class="btn ghost" onclick="startTuning(true)">Resume</button>
       <button class="btn ghost" onclick="loadTuning()">Refresh</button>
-      <span id="tunemsg" style="color:var(--mut);font-size:12px"></span>
     </div>
+    <div id="tunemsg" style="color:var(--mut);font-size:12px;margin-top:10px">
+      Runs here — no ROS or car needed. Roughly a second per lap simulated, so
+      25 × 8 is a few minutes; progress appears below as it goes.</div>
     <div id="bestcfg" style="margin-top:12px"></div>
   </div>
   <div class="card">
@@ -250,6 +260,9 @@
       <button class="btn" onclick="recordSession()">Record 120 s</button>
       <button class="btn ghost" onclick="buildSession()">Rebuild from recording</button>
     </div>
+    <div id="sessmsg" style="color:var(--mut);font-size:12px;margin-top:10px">
+      Record first, then rebuild — rebuilding needs a recording under
+      <code>practice/&lt;name&gt;/</code>.</div>
     <p class="note">
       Recording needs ROS on this machine (or the sim container). Rebuilding is
       offline and works anywhere — it reads the run, measures the lateral
@@ -343,6 +356,42 @@ function cmdHtml(c){
       </div>
     </div></div>`;
 }
+/* Report a launched job's progress and outcome into a status element on the
+   tab the user is actually looking at. Without this, a command that fails
+   (no ROS, no recording yet) looks identical to one that did nothing — which
+   is exactly how a working button gets reported as broken. */
+function say(el,msg,kind){
+  const e=typeof el==='string'?$(el):el; if(!e)return;
+  e.textContent=msg;
+  e.style.color={ok:'var(--grn)',err:'var(--red)',warn:'var(--amb)'}[kind]
+                ||'var(--mut)';
+}
+async function runAndWatch(id,args,statusEl,label,confirmed){
+  say(statusEl,'starting…');
+  let job;
+  try{
+    job=await post('/api/run',{id,args,confirm:!!confirmed});
+  }catch(e){return say(statusEl,'could not reach the server',' err');}
+  if(job.error)return say(statusEl,job.error,'err');
+  pollJobs();
+  const t0=Date.now();
+  const tick=setInterval(async()=>{
+    let d; try{d=await j('/api/jobs/'+job.id);}catch(e){return;}
+    const secs=Math.round((Date.now()-t0)/1000);
+    if(d.running){
+      // skip blank and rule lines, or the progress readout is just dashes
+      const last=(d.output||[]).filter(l=>/[a-z0-9]/i.test(l)).slice(-1)[0]||'';
+      say(statusEl,`${label} running ${secs}s — ${last.trim().slice(0,90)}`);
+      return;
+    }
+    clearInterval(tick);
+    const tail=(d.output||[]).filter(l=>l.trim()).slice(-2).join(' · ');
+    if(d.returncode===0){say(statusEl,`${label} finished (${secs}s)`,'ok');}
+    else{say(statusEl,`${label} failed — ${tail||'exit '+d.returncode}`,'err');}
+    if(id==='bayes-tune')loadTuning();
+    if(id==='practice')loadSessions();
+  },1000);
+}
 function runFromForm(id,danger){
   const args=[];
   $$(`input[data-cmd="${id}"]`).forEach(i=>{
@@ -413,10 +462,24 @@ async function generate(){
   }catch(e){$('#genmsg').textContent='error';}
   b.disabled=false;
 }
-const startRace=()=>post('/api/race/start');
-const stopRace=()=>post('/api/race/stop');
+async function startRace(){
+  say('#racemsg','starting…');
+  const r=await post('/api/race/start');
+  if(r.ok)say('#racemsg','race started — telemetry should go live','ok');
+  else say('#racemsg',r.log||'could not start the race','err');
+}
+async function stopRace(){
+  const r=await post('/api/race/stop');
+  say('#racemsg',r.ok?'stopped':(r.log||'stop failed'),r.ok?'ok':'err');
+}
 
 /* ── tuning ── */
+function startTuning(resume){
+  const args=['--iters',$('#tuneIters').value.trim()||'25',
+              '--trials',$('#tuneTrials').value.trim()||'8'];
+  if(resume)args.push('--resume');
+  runAndWatch('bayes-tune',args,'#tunemsg','tuning');
+}
 async function loadTuning(){
   const d=await j('/api/tuning');
   const ev=d.evaluations||[];
@@ -484,12 +547,12 @@ async function loadSessions(){
 const sessName=()=>$('#sessname').value.trim()||('session-'+Date.now().toString().slice(-6));
 function recordSession(){
   const n=sessName(); $('#sessname').value=n;
-  runCmd('practice',['--name',n,'--stage','record','--duration','120']);
+  runAndWatch('practice',['--name',n,'--stage','record','--duration','120'],
+              '#sessmsg','recording');
 }
 function buildSession(){
-  const n=sessName(); if(!n)return alert('name the session first');
-  runCmd('practice',['--name',n,'--stage','build']);
-  setTimeout(loadSessions,3000);
+  const n=sessName(); $('#sessname').value=n;
+  runAndWatch('practice',['--name',n,'--stage','build'],'#sessmsg','rebuild');
 }
 
 /* ── live map + telemetry ── */
