@@ -9,6 +9,22 @@ so the same nodes that win in sim drive the physical car.
 Built on the [f1tenth_gym_ros](https://github.com/f1tenth/f1tenth_gym_ros)
 simulation bridge (ROS 2 Humble).
 
+## Start here
+
+Everything runs through one command, which behaves the same whether you are on
+the Jetson, a Linux workstation with ROS, or a Windows laptop driving a Docker
+container — it detects what the machine has and routes accordingly.
+
+```bash
+python3 tools/atlas.py list      # everything you can run, and what is ready
+python3 tools/atlas.py doctor    # check every connection before you drive
+python3 tools/atlas.py ui        # the dashboard at http://localhost:8000
+python3 tools/atlas.py run sim   # start the simulator
+```
+
+New here? **[docs/GUIDE.md](docs/GUIDE.md)** covers setup, a practice session
+start to finish, and competition day.
+
 ```
                  ┌── sim:  gym_bridge (f1tenth_gym) ──────────────┐
 sensors ─────────┤                                                ├──► /scan, odom, /oakd/*
@@ -39,11 +55,32 @@ map ─► slam_toolbox ─► raceline_optimizer ─► raceline_mpc (MPC + AEB
    speed when the IMU says grip is running out — see
    [docs/mpc.md](docs/mpc.md) and [docs/racing_tech.md](docs/racing_tech.md).
 
+5. **Learn**: `rl_agent` adds a neural policy that outputs a *bounded correction*
+   to the MPC command — safe by construction, since zero authority is exactly
+   the MPC — see [docs/rl.md](docs/rl.md).
+
 Racing nodes: `raceline_mpc` (competition time-trial), `race_agent` /
-`racing_agent` (full strategy + opponents), `opponent_driver`,
-`camera_perception` ([docs/camera_perception.md](docs/camera_perception.md)).
-Tooling: `tools/auto_tune.py`, `tools/benchmark_lap.py`, and a live dashboard
-([docs/dashboard.md](docs/dashboard.md)).
+`racing_agent` (full strategy + opponents), `rl_agent` (learned policy),
+`opponent_driver`, `camera_perception`
+([docs/camera_perception.md](docs/camera_perception.md)).
+
+## Learning and tuning between sessions
+
+Practice time is the scarce resource at a competition, so three tools exist to
+spend it well:
+
+- **`atlas run practice`** — records a run, then reads off the lateral
+  acceleration the car *actually* sustained on that surface and re-profiles the
+  raceline against it. Every speed on your line rests on an assumed `a_lat`;
+  this replaces the guess with a measurement.
+- **`atlas run bayes-tune`** — a Gaussian process with Expected Improvement over
+  the grip, speed and MPC-weight parameters, scored on *expected time to
+  complete a lap including restarts after a crash*, so it will not trade
+  reliability for lap time. Far fewer runs than coordinate descent
+  (`tools/auto_tune.py`, kept for overnight sim runs).
+- **`atlas run train-rl`** — trains the residual policy in sim, warm-started
+  from MPC demonstrations. `atlas run eval-rl` races it against the MPC from
+  identical starts; if it does not win there it does not go on the track.
 
 ## Quickstart — simulation
 
@@ -129,13 +166,23 @@ Two-agent sim additionally has `/opp_scan`, `/opp_drive`,
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q        # pure-logic: MPC, race brain, hardware drivers
+python3 tools/atlas.py run tests   # or: python3 -m pytest tests/ -q
 python3 tests/test_mpc.py          # closed-loop MPC validation + solve-time budget
 ```
 
-`tests/test_hardware.py` covers the PCA9685 register/pulse maths, the VESC
-UART protocol, drive-backend auto-detection, lidar scan binning, and the
-traction governor — no hardware or ROS needed.
+167 tests, none of which need ROS, hardware or a GPU (torch-dependent ones skip
+cleanly if torch is absent):
+
+- `test_hardware.py` — PCA9685 register/pulse maths, the VESC UART protocol,
+  drive-backend auto-detection, lidar scan binning, the traction governor.
+- `test_mpc.py`, `test_mpcc.py`, `test_map_controller.py` — the controllers.
+- `test_rl.py` — the observation contract and, most importantly, the residual
+  safety envelope: the clamp that guarantees an untrained or diverged policy
+  still drives exactly as well as the MPC.
+- `test_bayes_opt.py` — GP inference, the acquisition function, and that the
+  search actually beats random search on the same budget.
+- `test_atlas.py` — every registry entry points at a file that exists and a ROS
+  node that is registered, so no launcher button is a dead one.
 
 ## License
 

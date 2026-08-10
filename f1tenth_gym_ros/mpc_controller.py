@@ -149,6 +149,17 @@ class KinematicMPC:
         if self.available:
             self._setup_qp_structure()
 
+    def reset(self):
+        """Forget the last applied input.
+
+        The Rd (input-rate) term ties each solve to the previous one, which is
+        what keeps steering smooth in a continuous run — but it also means a
+        fresh episode would inherit the last command of the previous one.  Call
+        this between independent runs (tuning trials, benchmark repeats, a
+        re-spawn) so every episode starts from the same state.
+        """
+        self._u_prev = np.zeros(self.NU)
+
     # ── raceline geometry ──────────────────────────────────────────────────────
     def set_raceline(self, x, y, hdg, curv, speed):
         x = np.asarray(x, float); y = np.asarray(y, float)

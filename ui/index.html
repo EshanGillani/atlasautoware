@@ -3,169 +3,542 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>F1TENTH · Race Control</title>
+<title>AtlasAutoware · Race Control</title>
 <style>
   :root{
     --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --mut:#8b949e;
     --acc:#2f81f7; --grn:#3fb950; --red:#f85149; --amb:#d29922; --blu:#388bfd;
+    --mono:ui-monospace,SFMono-Regular,Consolas,monospace;
   }
-  *{box-sizing:border-box} html,body{margin:0;height:100%}
-  body{background:var(--bg);color:var(--txt);font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
-  header{padding:14px 22px;border-bottom:1px solid var(--line);display:flex;
-    align-items:center;gap:14px}
-  header h1{font-size:17px;margin:0;letter-spacing:.5px}
-  header .dot{width:9px;height:9px;border-radius:50%;background:var(--mut)}
-  header .dot.live{background:var(--grn);box-shadow:0 0 8px var(--grn)}
-  .wrap{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px;max-width:1500px;margin:0 auto}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
-  .card h2{margin:0 0 14px;font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--mut)}
-  label{display:flex;justify-content:space-between;font-size:13px;margin:12px 0 4px;color:var(--mut)}
-  label b{color:var(--txt)}
+  *{box-sizing:border-box} html,body{margin:0;min-height:100%}
+  body{background:var(--bg);color:var(--txt);
+       font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:12px 20px;border-bottom:1px solid var(--line);display:flex;
+    align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;
+    background:var(--bg);z-index:10}
+  header h1{font-size:16px;margin:0;letter-spacing:.5px;white-space:nowrap}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--mut);flex:none}
+  .dot.live{background:var(--grn);box-shadow:0 0 8px var(--grn)}
+  .pills{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+  .pill{font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);
+    color:var(--mut);white-space:nowrap}
+  .pill.ok{color:var(--grn);border-color:#1d4429} .pill.no{color:var(--mut)}
+  .pill.warn{color:var(--amb);border-color:#4a3a12}
+  nav{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--line);
+    overflow-x:auto;position:sticky;top:53px;background:var(--bg);z-index:9}
+  nav button{background:none;border:0;border-bottom:2px solid transparent;color:var(--mut);
+    padding:11px 15px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+  nav button.on{color:var(--txt);border-bottom-color:var(--acc)}
+  main{padding:18px;max-width:1500px;margin:0 auto}
+  .tab{display:none} .tab.on{display:block}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .card h2{margin:0 0 12px;font-size:12px;text-transform:uppercase;letter-spacing:1px;
+    color:var(--mut)}
+  .card h2 small{text-transform:none;letter-spacing:0;font-weight:400;margin-left:8px}
+  label{display:flex;justify-content:space-between;font-size:13px;margin:12px 0 4px;
+    color:var(--mut)} label b{color:var(--txt)}
   input[type=range]{width:100%;accent-color:var(--acc)}
-  button{background:var(--acc);color:#fff;border:0;border-radius:7px;padding:10px 16px;
-    font-weight:600;cursor:pointer;font-size:14px}
-  button:hover{filter:brightness(1.1)} button:disabled{opacity:.5;cursor:default}
-  button.stop{background:var(--red)} button.ghost{background:#21262d;border:1px solid var(--line)}
-  .row{display:flex;gap:10px;align-items:center;margin-top:14px}
-  img#overlay{width:100%;border-radius:8px;margin-top:14px;background:#fff;min-height:120px}
-  .stats{font-size:12px;color:var(--mut);margin-top:10px;white-space:pre-wrap;font-family:ui-monospace,monospace}
-  .badge{display:inline-block;padding:4px 14px;border-radius:20px;font-weight:700;letter-spacing:.5px}
-  .telem{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:14px 0}
-  .tile{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px;text-align:center}
-  .tile .v{font-size:24px;font-weight:700} .tile .k{font-size:11px;color:var(--mut);text-transform:uppercase}
-  .thought{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:12px;
-    min-height:46px;font-size:13px;color:var(--txt)}
-  canvas{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;margin-top:14px}
-  .legend{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:14px;flex-wrap:wrap}
-  .legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:50%;
-    margin-right:5px;vertical-align:middle}
+  input[type=text]{background:#0d1117;border:1px solid var(--line);border-radius:6px;
+    color:var(--txt);padding:7px 9px;font-family:var(--mono);font-size:12px;width:100%}
+  button.btn{background:var(--acc);color:#fff;border:0;border-radius:7px;padding:9px 15px;
+    font-weight:600;cursor:pointer;font-size:13px}
+  button.btn:hover{filter:brightness(1.12)} button.btn:disabled{opacity:.45;cursor:default}
+  button.btn.stop{background:var(--red)} button.btn.warn{background:var(--amb);color:#000}
+  button.btn.ghost{background:#21262d;border:1px solid var(--line);color:var(--txt)}
+  button.btn.sm{padding:5px 11px;font-size:12px}
+  .row{display:flex;gap:9px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  img#overlay{width:100%;border-radius:8px;margin-top:12px;background:#fff;min-height:110px}
+  .stats{font-size:12px;color:var(--mut);margin-top:9px;white-space:pre-wrap;
+    font-family:var(--mono)}
+  .badge{display:inline-block;padding:4px 13px;border-radius:20px;font-weight:700}
+  .telem{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}
+  .tile{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:11px;
+    text-align:center}
+  .tile .v{font-size:23px;font-weight:700} .tile .k{font-size:10px;color:var(--mut);
+    text-transform:uppercase;letter-spacing:.5px}
+  .thought{background:#0d1117;border:1px solid var(--line);border-radius:8px;padding:11px;
+    min-height:44px;font-size:13px}
+  canvas{width:100%;background:#0d1117;border:1px solid var(--line);border-radius:8px;
+    margin-top:12px}
+  .legend{font-size:11px;color:var(--mut);margin-top:6px;display:flex;gap:13px;flex-wrap:wrap}
+  .legend span::before{content:"";display:inline-block;width:9px;height:9px;
+    border-radius:50%;margin-right:5px;vertical-align:middle}
   .lg-ego::before{background:#fff} .lg-l::before{background:var(--red)}
   .lg-c::before{background:var(--blu)} .lg-f::before{background:var(--grn)}
+  /* launcher */
+  .cmd{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+    background:#0d1117}
+  .cmd.off{opacity:.5} .cmd.danger{border-left:3px solid var(--amb)}
+  .cmd-h{display:flex;align-items:center;gap:9px;cursor:pointer}
+  .cmd-h code{color:var(--acc);font-family:var(--mono);font-size:12px;font-weight:600}
+  .cmd-h .t{flex:1;font-size:13px} .cmd-h .s{font-size:11px;color:var(--mut)}
+  .cmd-b{display:none;padding-top:11px;border-top:1px solid var(--line);margin-top:10px}
+  .cmd.open .cmd-b{display:block}
+  .cmd-b p{margin:0 0 10px;color:var(--mut);font-size:12.5px;line-height:1.55}
+  .arg{display:grid;grid-template-columns:170px 1fr;gap:9px;align-items:center;
+    margin-bottom:7px}
+  .arg code{font-family:var(--mono);font-size:11.5px;color:var(--mut)}
+  .out{background:#010409;border:1px solid var(--line);border-radius:6px;padding:9px;
+    font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;max-height:340px;
+    overflow:auto;color:#c9d1d9;margin-top:9px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;
+    letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:6px 8px;border-bottom:1px solid #21262d;font-family:var(--mono);font-size:12px}
+  tr.best td{color:var(--grn)}
+  .chk{display:flex;gap:9px;padding:5px 0;font-size:12.5px;align-items:baseline}
+  .chk .st{font-family:var(--mono);font-weight:700;font-size:11px;width:42px;flex:none}
+  .st.ok{color:var(--grn)} .st.warn{color:var(--amb)} .st.fail{color:var(--red)}
+  .st.skip{color:var(--mut)}
+  .chk .nm{width:210px;flex:none;color:var(--txt)} .chk .dt{color:var(--mut);flex:1}
+  .fix{color:var(--amb);font-size:11.5px;margin:1px 0 6px 51px}
+  .empty{color:var(--mut);font-size:13px;padding:16px;text-align:center}
+  .note{font-size:12px;color:var(--mut);margin-top:10px;line-height:1.6}
+  @media(max-width:520px){.grid{grid-template-columns:1fr}.arg{grid-template-columns:1fr}
+    .chk{flex-wrap:wrap}.chk .nm{width:auto}}
 </style>
 </head>
 <body>
 <header>
   <div class="dot" id="livedot"></div>
-  <h1>F1TENTH · RACE CONTROL</h1>
+  <h1>ATLASAUTOWARE · RACE CONTROL</h1>
   <span id="livetxt" style="color:var(--mut);font-size:12px">idle</span>
+  <div class="pills" id="envpills"></div>
 </header>
 
-<div class="wrap">
-  <!-- ───────── Raceline studio ───────── -->
-  <div class="card">
-    <h2>Raceline studio — competition track</h2>
-    <label>Wall clearance (margin) <b id="vMargin">0.35 m</b></label>
-    <input type="range" id="margin" min="0.12" max="0.6" step="0.01" value="0.35">
-    <label>Late-apex / overtaking bias <b id="vApex">1.0</b></label>
-    <input type="range" id="apex" min="0" max="2" step="0.1" value="1.0">
-    <label>Max lateral grip (a_lat) <b id="vAlat">6.5 m/s²</b></label>
-    <input type="range" id="alat" min="4" max="9" step="0.1" value="6.5">
-    <label>Top speed cap <b id="vVmax">7.0 m/s</b></label>
-    <input type="range" id="vmax" min="4" max="9" step="0.1" value="7.0">
-    <div class="row">
-      <button id="gen" onclick="generate()">Generate raceline</button>
-      <span id="genmsg" style="color:var(--mut);font-size:12px"></span>
-    </div>
-    <img id="overlay" src="/api/image/comp_raceline_annotated.png" alt="raceline overlay">
-    <div class="stats" id="stats"></div>
-  </div>
+<nav>
+  <button class="on" data-tab="preflight">Pre-flight</button>
+  <button data-tab="launch">Launcher</button>
+  <button data-tab="raceline">Raceline</button>
+  <button data-tab="race">Race</button>
+  <button data-tab="tuning">Tuning</button>
+  <button data-tab="practice">Practice</button>
+</nav>
 
-  <!-- ───────── Race control ───────── -->
-  <div class="card">
-    <h2>Race control — opponent-aware run</h2>
-    <div class="row">
-      <button id="start" onclick="startRace()">▶ Start race</button>
-      <button class="stop" onclick="stopRace()">■ Stop</button>
-      <span class="badge" id="mode" style="background:#21262d">—</span>
+<main>
+<!-- ═══════════ PRE-FLIGHT ═══════════ -->
+<section class="tab on" id="tab-preflight">
+  <div class="grid">
+    <div class="card">
+      <h2>Hardware check <small id="docsum"></small></h2>
+      <div class="row" style="margin-top:0">
+        <button class="btn" onclick="runDoctor()" id="docbtn">Run check</button>
+        <span class="s" id="docmsg" style="color:var(--mut);font-size:12px"></span>
+      </div>
+      <div id="doctor" style="margin-top:12px"></div>
     </div>
-    <div class="telem">
-      <div class="tile"><div class="v" id="tSpeed">0.0</div><div class="k">speed m/s</div></div>
-      <div class="tile"><div class="v" id="tLap">0</div><div class="k">lap</div></div>
-      <div class="tile"><div class="v" id="tOpp">0</div><div class="k">opponents</div></div>
-    </div>
-    <div class="thought" id="thought">Start a race to see the agent's live reasoning.</div>
-    <canvas id="map" width="640" height="420"></canvas>
-    <div class="legend">
-      <span class="lg-ego">ego</span><span class="lg-l">lidar</span>
-      <span class="lg-c">camera</span><span class="lg-f">fused</span>
-      <span style="color:var(--mut)">line color = speed (green fast → red slow)</span>
+    <div class="card">
+      <h2>Before you drive</h2>
+      <p class="note">
+        The order that keeps sessions from being wasted:
+      </p>
+      <ol class="note" style="padding-left:18px;line-height:1.9">
+        <li>Run the hardware check — fix every <b style="color:var(--red)">FAIL</b>
+            before powering the motor.</li>
+        <li>Put the car on a stand, wheels off the ground, for the first
+            <code>race</code> at <code>v_scale 0.3</code>.</li>
+        <li>Map the track (<b>Launcher → Mapping</b>), then generate a raceline
+            (<b>Raceline</b>).</li>
+        <li>Record a practice run and rebuild the speed profile from the grip
+            you actually measured (<b>Practice</b>).</li>
+        <li>Raise <code>v_scale</code> one step per clean lap. Never two steps.</li>
+      </ol>
+      <p class="note">
+        Warnings are usually fine — a missing OAK-D only disables camera
+        detection. Failures are not: a bad raceline or a dead lidar means the
+        car will not know where it is.
+      </p>
     </div>
   </div>
-</div>
+</section>
+
+<!-- ═══════════ LAUNCHER ═══════════ -->
+<section class="tab" id="tab-launch">
+  <div class="card" style="margin-bottom:16px">
+    <h2>Running <small>output is live; jobs keep running if you switch tabs</small></h2>
+    <div id="jobs"><div class="empty">Nothing running.</div></div>
+  </div>
+  <div id="groups"></div>
+</section>
+
+<!-- ═══════════ RACELINE ═══════════ -->
+<section class="tab" id="tab-raceline">
+  <div class="grid">
+    <div class="card">
+      <h2>Raceline studio <small>competition track</small></h2>
+      <label>Wall clearance (margin) <b id="vMargin">0.35 m</b></label>
+      <input type="range" id="margin" min="0.12" max="0.6" step="0.01" value="0.35">
+      <label>Late-apex / overtaking bias <b id="vApex">1.0</b></label>
+      <input type="range" id="apex" min="0" max="2" step="0.1" value="1.0">
+      <label>Max lateral grip (a_lat) <b id="vAlat">6.5 m/s²</b></label>
+      <input type="range" id="alat" min="4" max="9" step="0.1" value="6.5">
+      <label>Top speed cap <b id="vVmax">7.0 m/s</b></label>
+      <input type="range" id="vmax" min="4" max="9" step="0.1" value="7.0">
+      <div class="row">
+        <button class="btn" id="gen" onclick="generate()">Generate raceline</button>
+        <span id="genmsg" style="color:var(--mut);font-size:12px"></span>
+      </div>
+      <p class="note">
+        <b>a_lat</b> is the assumption everything else rests on. Measure it
+        instead of guessing: drive a run, then <b>Practice → rebuild</b> reads
+        the grip the car actually sustained.
+      </p>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="card">
+      <h2>Annotated line</h2>
+      <img id="overlay" src="/api/image/comp_raceline_annotated.png" alt="raceline overlay">
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ RACE ═══════════ -->
+<section class="tab" id="tab-race">
+  <div class="grid">
+    <div class="card">
+      <h2>Race control <small>two-car opponent demo (sim)</small></h2>
+      <div class="row" style="margin-top:0">
+        <button class="btn" onclick="startRace()">▶ Start race</button>
+        <button class="btn stop" onclick="stopRace()">■ Stop</button>
+        <span class="badge" id="mode" style="background:#21262d">—</span>
+      </div>
+      <div class="telem">
+        <div class="tile"><div class="v" id="tSpeed">0.0</div><div class="k">speed m/s</div></div>
+        <div class="tile"><div class="v" id="tLap">0</div><div class="k">lap</div></div>
+        <div class="tile"><div class="v" id="tOpp">0</div><div class="k">opponents</div></div>
+      </div>
+      <div class="thought" id="thought">Start a race to see the agent's live reasoning.</div>
+    </div>
+    <div class="card">
+      <h2>Live map</h2>
+      <canvas id="map" width="640" height="420"></canvas>
+      <div class="legend">
+        <span class="lg-ego">ego</span><span class="lg-l">lidar</span>
+        <span class="lg-c">camera</span><span class="lg-f">fused</span>
+        <span>line colour = speed (green fast → red slow)</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════ TUNING ═══════════ -->
+<section class="tab" id="tab-tuning">
+  <div class="card" style="margin-bottom:16px">
+    <h2>Bayesian tuning <small>each run teaches the model where to look next</small></h2>
+    <div class="row" style="margin-top:0">
+      <button class="btn" onclick="runCmd('bayes-tune',[])">Start tuning</button>
+      <button class="btn ghost" onclick="loadTuning()">Refresh</button>
+      <span id="tunemsg" style="color:var(--mut);font-size:12px"></span>
+    </div>
+    <div id="bestcfg" style="margin-top:12px"></div>
+  </div>
+  <div class="card">
+    <h2>Evaluations</h2>
+    <canvas id="tunechart" width="900" height="240"></canvas>
+    <div id="tunetable" style="margin-top:12px"></div>
+  </div>
+</section>
+
+<!-- ═══════════ PRACTICE ═══════════ -->
+<section class="tab" id="tab-practice">
+  <div class="card" style="margin-bottom:16px">
+    <h2>Practice sessions <small>record a run, rebuild the profile from measured grip</small></h2>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="sessname" placeholder="session name (e.g. friday-am)"
+             style="max-width:260px">
+      <button class="btn" onclick="recordSession()">Record 120 s</button>
+      <button class="btn ghost" onclick="buildSession()">Rebuild from recording</button>
+    </div>
+    <p class="note">
+      Recording needs ROS on this machine (or the sim container). Rebuilding is
+      offline and works anywhere — it reads the run, measures the lateral
+      acceleration the car actually sustained, and re-profiles the raceline
+      against it.
+    </p>
+  </div>
+  <div class="card">
+    <h2>Sessions</h2>
+    <div id="sessions"><div class="empty">No sessions yet.</div></div>
+  </div>
+</section>
+</main>
 
 <script>
-const MODE_BG={CRUISE:'var(--grn)',ATTACK:'var(--red)',DEFEND:'var(--blu)',EVADE:'var(--amb)'};
-function bind(id,suf,el){const s=document.getElementById(id);const o=document.getElementById(el);
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const j=async(u,o)=>(await fetch(u,o)).json();
+const post=(u,b)=>j(u,{method:'POST',headers:{'Content-Type':'application/json'},
+                       body:JSON.stringify(b||{})});
+const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+/* ── tabs ── */
+$$('nav button').forEach(b=>b.onclick=()=>{
+  $$('nav button').forEach(x=>x.classList.toggle('on',x===b));
+  $$('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab-'+b.dataset.tab));
+  ({tuning:loadTuning,practice:loadSessions,launch:loadCommands}[b.dataset.tab]||(()=>{}))();
+});
+
+/* ── environment pills ── */
+async function loadEnv(){
+  try{
+    const e=await j('/api/env');
+    const p=(t,ok,cls)=>`<span class="pill ${ok?(cls||'ok'):'no'}">${t}</span>`;
+    $('#envpills').innerHTML=
+      p(e.native_ros?'ROS native':(e.container?'ROS docker':'no ROS'),
+        e.ros_ready,e.ros_ready?'ok':'warn')
+      +p('f110_gym',e.gym)+p('torch',e.torch)+p('numpy',e.numpy);
+  }catch(err){}
+}
+
+/* ── pre-flight ── */
+async function runDoctor(){
+  const b=$('#docbtn'); b.disabled=true; $('#docmsg').textContent='probing…';
+  try{
+    const d=await j('/api/doctor');
+    const c={ok:0,warn:0,fail:0,skip:0};
+    $('#doctor').innerHTML=(d.checks||[]).map(k=>{
+      c[k.status]=(c[k.status]||0)+1;
+      const fix=(k.fix&&k.status==='fail')?`<div class="fix">→ ${esc(k.fix)}</div>`:'';
+      return `<div class="chk"><span class="st ${k.status}">${k.status.toUpperCase()}</span>`
+        +`<span class="nm">${esc(k.name)}</span>`
+        +`<span class="dt">${esc(k.detail)}</span></div>${fix}`;
+    }).join('')||'<div class="empty">no results</div>';
+    $('#docsum').innerHTML=`<span style="color:var(--grn)">${c.ok||0} pass</span> · `
+      +`<span style="color:var(--amb)">${c.warn||0} warn</span> · `
+      +`<span style="color:var(--red)">${c.fail||0} fail</span>`;
+    $('#docmsg').textContent=d.ok?'clear to drive':'fix the failures first';
+  }catch(e){$('#docmsg').textContent='check failed';}
+  b.disabled=false;
+}
+
+/* ── launcher ── */
+let CMDS=null;
+async function loadCommands(){
+  if(CMDS)return;
+  const d=await j('/api/commands'); CMDS=d.groups;
+  $('#groups').innerHTML=d.groups.map(g=>`
+    <div class="card" style="margin-bottom:16px">
+      <h2>${esc(g.label)} <small>${esc(g.blurb)}</small></h2>
+      ${g.commands.map(c=>cmdHtml(c)).join('')}
+    </div>`).join('');
+  $$('.cmd-h').forEach(h=>h.onclick=()=>h.parentElement.classList.toggle('open'));
+}
+function cmdHtml(c){
+  const args=c.args.map((a,i)=>`
+    <div class="arg"><code title="${esc(a.help)}">${esc(a.flag)}</code>
+    <input type="text" data-cmd="${c.id}" data-flag="${esc(a.flag)}"
+           value="${esc(a.default??'')}" placeholder="${esc(a.help)}"></div>`).join('');
+  return `<div class="cmd ${c.available?'':'off'} ${c.danger?'danger':''}">
+    <div class="cmd-h"><code>${c.id}</code><span class="t">${esc(c.title)}</span>
+      <span class="s">${c.available?(c.danger?'⚠ moves the car':c.context)
+                                   :'unavailable'}</span></div>
+    <div class="cmd-b">
+      <p>${esc(c.long)}</p>
+      ${c.available?'':`<p style="color:var(--amb)">${esc(c.reason)}</p>`}
+      ${args}
+      <div class="row">
+        <button class="btn sm ${c.danger?'warn':''}" ${c.available?'':'disabled'}
+          onclick="runFromForm('${c.id}',${c.danger})">
+          ${c.danger?'Run (moves the car)':'Run'}</button>
+      </div>
+    </div></div>`;
+}
+function runFromForm(id,danger){
+  const args=[];
+  $$(`input[data-cmd="${id}"]`).forEach(i=>{
+    const v=i.value.trim(); if(!v)return;
+    const f=i.dataset.flag;
+    // "-p x:=" and bare positionals take the value glued on; flags take it separate
+    if(f.endsWith(':=')||f.endsWith('=')) args.push(f+v);
+    else if(f.startsWith('-')) args.push(f,v);
+    else args.push(v);
+  });
+  if(danger&&!confirm('This can move a real car.\n\nIs the area clear and is '
+                      +'someone holding the kill switch?'))return;
+  runCmd(id,args,danger);
+}
+async function runCmd(id,args,confirmed){
+  const r=await post('/api/run',{id,args,confirm:!!confirmed});
+  if(r.error){alert(r.error);return;}
+  $$('nav button').find(b=>b.dataset.tab==='launch')?.click();
+  pollJobs();
+}
+async function pollJobs(){
+  let d; try{d=await j('/api/jobs');}catch(e){return;}
+  const el=$('#jobs');
+  if(!d.jobs.length){el.innerHTML='<div class="empty">Nothing running.</div>';return;}
+  const open=new Set($$('#jobs .cmd.open').map(x=>x.dataset.job));
+  el.innerHTML=d.jobs.slice(0,8).map(job=>`
+    <div class="cmd ${job.running?'open':''}" data-job="${job.id}">
+      <div class="cmd-h"><code>${esc(job.cmd)}</code>
+        <span class="t" style="font-family:var(--mono);font-size:11.5px;color:var(--mut)">
+          ${esc(job.shown)}</span>
+        <span class="s">${job.running?`running ${job.elapsed}s`
+          :`exit ${job.returncode} · ${job.elapsed}s`}</span>
+        ${job.running?`<button class="btn sm stop" onclick="event.stopPropagation();
+          stopJob('${job.id}')">Stop</button>`:''}</div>
+      <div class="cmd-b"><div class="out" id="out-${job.id}">loading…</div></div>
+    </div>`).join('');
+  $$('#jobs .cmd').forEach(c=>{
+    if(open.has(c.dataset.job))c.classList.add('open');
+    c.querySelector('.cmd-h').onclick=()=>{c.classList.toggle('open');fillOut(c.dataset.job);};
+    if(c.classList.contains('open'))fillOut(c.dataset.job);
+  });
+}
+async function fillOut(id){
+  try{
+    const job=await j('/api/jobs/'+id); const el=$('#out-'+id); if(!el)return;
+    const stick=el.scrollTop+el.clientHeight>=el.scrollHeight-30;
+    el.textContent=(job.output||[]).join('\n')||'(no output yet)';
+    if(stick)el.scrollTop=el.scrollHeight;
+  }catch(e){}
+}
+const stopJob=id=>post(`/api/jobs/${id}/stop`).then(pollJobs);
+
+/* ── raceline studio ── */
+function bind(id,suf,el){const s=$('#'+id),o=$('#'+el);
   const f=()=>o.textContent=s.value+suf; s.oninput=f; f();}
 bind('margin',' m','vMargin'); bind('apex','','vApex');
 bind('alat',' m/s²','vAlat'); bind('vmax',' m/s','vVmax');
-
 async function generate(){
-  const btn=document.getElementById('gen'); btn.disabled=true;
-  document.getElementById('genmsg').textContent='optimizing…';
-  const body={margin:+margin.value,apex_bias:+apex.value,a_lat:+alat.value,v_max:+vmax.value};
+  const b=$('#gen'); b.disabled=true; $('#genmsg').textContent='optimizing…';
   try{
-    const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(body)});
-    const j=await r.json();
-    document.getElementById('overlay').src='/api/image/'+j.image;
-    document.getElementById('stats').textContent=Object.entries(j.stats||{})
-      .map(([k,v])=>k+': '+v).join('\n');
-    document.getElementById('genmsg').textContent=j.ok?'done ✓':'failed';
+    const r=await post('/api/generate',{margin:+margin.value,apex_bias:+apex.value,
+                                        a_lat:+alat.value,v_max:+vmax.value});
+    $('#overlay').src='/api/image/'+r.image;
+    $('#stats').textContent=Object.entries(r.stats||{}).map(([k,v])=>k+': '+v).join('\n')
+      ||(r.log||'').slice(-400);
+    $('#genmsg').textContent=r.ok?'done ✓':'failed';
     loadRaceline();
-  }catch(e){document.getElementById('genmsg').textContent='error';}
-  btn.disabled=false;
+  }catch(e){$('#genmsg').textContent='error';}
+  b.disabled=false;
 }
-async function startRace(){document.getElementById('genmsg');
-  await fetch('/api/race/start',{method:'POST'});}
-async function stopRace(){await fetch('/api/race/stop',{method:'POST'});}
+const startRace=()=>post('/api/race/start');
+const stopRace=()=>post('/api/race/stop');
 
-// ── live mini-map ──
+/* ── tuning ── */
+async function loadTuning(){
+  const d=await j('/api/tuning');
+  const ev=d.evaluations||[];
+  if(d.best){
+    const c=d.best.config||{};
+    $('#bestcfg').innerHTML='<table><tr>'
+      +Object.keys(c).map(k=>`<th>${esc(k)}</th>`).join('')+'</tr><tr class="best">'
+      +Object.values(c).map(v=>`<td>${(+v).toFixed(2)}</td>`).join('')+'</tr></table>'
+      +`<p class="note">Best score <b>${(+d.best.score).toFixed(2)}</b>`
+      +` — expected seconds per completed lap, including restarts after a crash.`
+      +` Reliability ${((d.best.info?.success??0)*100).toFixed(0)}%.</p>`;
+  }else $('#bestcfg').innerHTML='<div class="empty">No tuning runs yet.</div>';
+  drawTune(ev);
+  $('#tunetable').innerHTML=ev.length?'<table><tr><th>#</th><th>score</th><th>lap</th>'
+    +'<th>success</th><th>v_scale</th><th>a_lat</th></tr>'
+    +ev.slice(-25).reverse().map(r=>{
+      const best=d.best&&Math.abs(r.score-d.best.score)<1e-9;
+      return `<tr class="${best?'best':''}"><td>${r.i}</td>`
+        +`<td>${(+r.score).toFixed(2)}</td>`
+        +`<td>${r.info?.mean_lap?(+r.info.mean_lap).toFixed(2)+'s':'—'}</td>`
+        +`<td>${((r.info?.success??0)*100).toFixed(0)}%</td>`
+        +`<td>${(+r.config.v_scale).toFixed(2)}</td>`
+        +`<td>${(+r.config.a_lat).toFixed(2)}</td></tr>`;}).join('')+'</table>':'';
+}
+function drawTune(ev){
+  const c=$('#tunechart'),g=c.getContext('2d');
+  g.clearRect(0,0,c.width,c.height);
+  if(!ev.length)return;
+  // Clip the failure scores: plotted raw they flatten every real lap time into
+  // one line at the bottom of the chart.
+  const ok=ev.map(r=>r.score).filter(s=>s<250);
+  const hi=ok.length?Math.max(...ok)*1.05:100, lo=ok.length?Math.min(...ok)*0.95:0;
+  const pad=34,W=c.width-pad*2,H=c.height-pad*2;
+  g.strokeStyle='#30363d';g.lineWidth=1;
+  g.beginPath();g.moveTo(pad,pad);g.lineTo(pad,pad+H);g.lineTo(pad+W,pad+H);g.stroke();
+  g.fillStyle='#8b949e';g.font='11px ui-monospace';
+  g.fillText(hi.toFixed(1),2,pad+4); g.fillText(lo.toFixed(1),2,pad+H+4);
+  g.fillText('evaluation',pad+W/2-28,c.height-6);
+  const X=i=>pad+(ev.length<2?W/2:i*W/(ev.length-1));
+  const Y=s=>pad+H-Math.max(0,Math.min(1,(s-lo)/(hi-lo||1)))*H;
+  let best=Infinity; g.strokeStyle='#3fb950';g.lineWidth=2;g.beginPath();
+  ev.forEach((r,i)=>{best=Math.min(best,r.score);
+    const y=Y(best); i?g.lineTo(X(i),y):g.moveTo(X(i),y);});
+  g.stroke();
+  ev.forEach((r,i)=>{const fail=r.score>=250;
+    g.fillStyle=fail?'#f85149':'#2f81f7';
+    g.beginPath();g.arc(X(i),fail?pad+H-3:Y(r.score),3,0,7);g.fill();});
+  g.fillStyle='#8b949e';
+  g.fillText('● evaluation   ● crashed (no lap)   ─ best so far',pad,pad-12);
+}
+
+/* ── practice ── */
+async function loadSessions(){
+  const d=await j('/api/sessions');
+  $('#sessions').innerHTML=d.sessions.length
+    ?'<table><tr><th>session</th><th>distance</th><th>grip p95</th><th>top speed</th>'
+     +'<th>est lap</th></tr>'
+     +d.sessions.map(s=>`<tr><td>${esc(s.name)}</td>`
+       +`<td>${s.distance_m.toFixed(0)} m</td>`
+       +`<td>${s.a_lat_p95.toFixed(2)} m/s²</td>`
+       +`<td>${s.v_top.toFixed(2)} m/s</td>`
+       +`<td>${s.est_lap?s.est_lap.toFixed(2)+'s':'—'}</td></tr>`).join('')+'</table>'
+    :'<div class="empty">No sessions yet.</div>';
+}
+const sessName=()=>$('#sessname').value.trim()||('session-'+Date.now().toString().slice(-6));
+function recordSession(){
+  const n=sessName(); $('#sessname').value=n;
+  runCmd('practice',['--name',n,'--stage','record','--duration','120']);
+}
+function buildSession(){
+  const n=sessName(); if(!n)return alert('name the session first');
+  runCmd('practice',['--name',n,'--stage','build']);
+  setTimeout(loadSessions,3000);
+}
+
+/* ── live map + telemetry ── */
 let RL=null;
-async function loadRaceline(){try{RL=await (await fetch('/api/raceline')).json();}catch(e){}}
-function spdColor(t){t=Math.max(0,Math.min(1,t));
-  return t<.5?`rgb(255,${Math.round(510*t)},60)`:`rgb(${Math.round(255*(2-2*t))},255,60)`;}
+async function loadRaceline(){try{RL=await j('/api/raceline');}catch(e){}}
+const spdColor=t=>{t=Math.max(0,Math.min(1,t));
+  return t<.5?`rgb(255,${Math.round(510*t)},60)`:`rgb(${Math.round(255*(2-2*t))},255,60)`;};
 function draw(state){
-  const c=document.getElementById('map'),g=c.getContext('2d');
+  const c=$('#map'),g=c.getContext('2d');
   g.clearRect(0,0,c.width,c.height);
   if(!RL||!RL.x.length)return;
   const xs=RL.x,ys=RL.y,sp=RL.speed;
-  const minx=Math.min(...xs),maxx=Math.max(...xs),miny=Math.min(...ys),maxy=Math.max(...ys);
-  const pad=30,sx=(c.width-2*pad)/(maxx-minx),sy=(c.height-2*pad)/(maxy-miny),s=Math.min(sx,sy);
+  const minx=Math.min(...xs),maxx=Math.max(...xs),
+        miny=Math.min(...ys),maxy=Math.max(...ys);
+  const pad=30,s=Math.min((c.width-2*pad)/(maxx-minx),(c.height-2*pad)/(maxy-miny));
   const T=(x,y)=>[pad+(x-minx)*s, c.height-pad-(y-miny)*s];
-  const vmax=Math.max(...sp);
-  g.lineWidth=3;
-  for(let i=0;i<xs.length;i++){const j=(i+1)%xs.length;
-    const[a,b]=T(xs[i],ys[i]),[d,e]=T(xs[j],ys[j]);
-    g.strokeStyle=spdColor(sp[i]/vmax);g.beginPath();g.moveTo(a,b);g.lineTo(d,e);g.stroke();}
+  const vmx=Math.max(...sp); g.lineWidth=3;
+  for(let i=0;i<xs.length;i++){const k=(i+1)%xs.length;
+    const[a,b]=T(xs[i],ys[i]),[d,e]=T(xs[k],ys[k]);
+    g.strokeStyle=spdColor(sp[i]/vmx);g.beginPath();g.moveTo(a,b);g.lineTo(d,e);g.stroke();}
   if(!state||!state.running)return;
-  // opponents
   for(const o of (state.opponents||[])){const[a,b]=T(o.x,o.y);
     g.fillStyle={lidar:'#f85149',camera:'#388bfd',fused:'#3fb950'}[o.source]||'#f85149';
     g.beginPath();g.arc(a,b,6,0,7);g.fill();}
-  // ego triangle
-  if(state.ego){const[a,b]=T(state.ego[0],state.ego[1]),th=state.ego[2];
-    g.save();g.translate(a,b);g.rotate(-th);g.fillStyle='#fff';
-    g.beginPath();g.moveTo(11,0);g.lineTo(-7,6);g.lineTo(-7,-6);g.closePath();g.fill();g.restore();}
+  if(state.ego){const[a,b]=T(state.ego[0],state.ego[1]);
+    g.save();g.translate(a,b);g.rotate(-state.ego[2]);g.fillStyle='#fff';
+    g.beginPath();g.moveTo(11,0);g.lineTo(-7,6);g.lineTo(-7,-6);g.closePath();
+    g.fill();g.restore();}
 }
+const MODE_BG={CRUISE:'var(--grn)',ATTACK:'var(--red)',DEFEND:'var(--blu)',
+               EVADE:'var(--amb)'};
 async function poll(){
   try{
-    const st=await (await fetch('/api/state')).json();
-    const live=st.running;
-    document.getElementById('livedot').className='dot'+(live?' live':'');
-    document.getElementById('livetxt').textContent=live?'racing — telemetry live':'idle';
-    const mb=document.getElementById('mode');
-    mb.textContent=live?st.mode:'—'; mb.style.background=live?(MODE_BG[st.mode]||'#21262d'):'#21262d';
+    const st=await j('/api/state'); const live=st.running;
+    $('#livedot').className='dot'+(live?' live':'');
+    $('#livetxt').textContent=live?'racing — telemetry live':'idle';
+    const mb=$('#mode'); mb.textContent=live?st.mode:'—';
+    mb.style.background=live?(MODE_BG[st.mode]||'#21262d'):'#21262d';
     if(live){
-      document.getElementById('tSpeed').textContent=(st.speed||0).toFixed(1);
-      document.getElementById('tLap').textContent=st.lap||0;
-      document.getElementById('tOpp').textContent=st.opp_count||0;
-      document.getElementById('thought').textContent=st.thought||'';
+      $('#tSpeed').textContent=(st.speed||0).toFixed(1);
+      $('#tLap').textContent=st.lap||0;
+      $('#tOpp').textContent=st.opp_count||0;
+      $('#thought').textContent=st.thought||'';
     }
     draw(st);
   }catch(e){}
 }
-loadRaceline(); setInterval(poll,200);
+loadEnv(); loadRaceline(); runDoctor();
+setInterval(poll,250); setInterval(pollJobs,1200); setInterval(loadEnv,10000);
 </script>
 </body>
 </html>

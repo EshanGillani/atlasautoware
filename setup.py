@@ -5,7 +5,7 @@ package_name = 'f1tenth_gym_ros'
 setup(
     name=package_name,
     version='0.0.0',
-    packages=[package_name],
+    packages=[package_name, package_name + '.rl'],
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -31,6 +31,7 @@ setup(
             'mapping_driver = f1tenth_gym_ros.mapping_driver:main',
             'track_learner = f1tenth_gym_ros.track_learner:main',
             'raceline_mpc = f1tenth_gym_ros.raceline_mpc:main',
+            'rl_agent = f1tenth_gym_ros.rl_agent:main',
             'camera_perception = f1tenth_gym_ros.camera_perception:main',
             'drive_node = f1tenth_gym_ros.drive_node:main',
             'rplidar_node = f1tenth_gym_ros.rplidar_node:main',
