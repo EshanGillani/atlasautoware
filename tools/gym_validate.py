@@ -127,6 +127,8 @@ def main():
     while cum < args.laps * n:
         x, y = scalar(obs['poses_x']), scalar(obs['poses_y'])
         yaw = scalar(obs['poses_theta'])
+        yaw = math.atan2(math.sin(yaw), math.cos(yaw))   # f110_gym gives [0,2π);
+        #                          the MPC/raceline headings are [-π,π] — normalize
         v = scalar(obs['linear_vels_x'])
         nearest = int(np.argmin((rx - x) ** 2 + (ry - y) ** 2))
         d = nearest - prev_j
