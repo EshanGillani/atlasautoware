@@ -375,8 +375,30 @@ async function runAndWatch(id,args,statusEl,label,confirmed){
   if(job.error)return say(statusEl,job.error,'err');
   pollJobs();
   const t0=Date.now();
+  let misses=0;
   const tick=setInterval(async()=>{
-    let d; try{d=await j('/api/jobs/'+job.id);}catch(e){return;}
+    let d;
+    try{
+      d=await j('/api/jobs/'+job.id);
+      misses=0;
+    }catch(e){
+      // Genuine network failure (the server stopped). The watcher must be able
+      // to give up, or every orphaned watch is a permanent 1 Hz poll for the
+      // life of the page.
+      if(++misses < 5)return;
+      clearInterval(tick);
+      return say(statusEl,`${label}: lost contact with the server`,'warn');
+    }
+    // fetch does NOT reject on 404, so a job the server no longer knows about
+    // arrives here as an ordinary response carrying an error field. Without
+    // this branch it falls through to the completion path and gets reported as
+    // "failed — exit undefined", which is worse than saying nothing.
+    if(d && d.error){
+      clearInterval(tick);
+      return say(statusEl,
+                 `${label}: job history was trimmed — see the Launcher tab`,
+                 'warn');
+    }
     const secs=Math.round((Date.now()-t0)/1000);
     if(d.running){
       // skip blank and rule lines, or the progress readout is just dashes

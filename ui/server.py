@@ -52,6 +52,8 @@ import atlas_registry as reg                   # noqa: E402
 
 SEED = ('49.910', '42.780')                    # competition-track corridor seed
 MAX_TAIL = 400                                 # output lines kept per job
+MAX_JOBS = 40                                  # finished jobs kept in memory
+MAX_LOG_BYTES = 512 * 1024                     # tail of bayes_log.jsonl to read
 
 
 # ── job control ──────────────────────────────────────────────────────────────
@@ -80,13 +82,22 @@ class Job:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
-        for line in self.proc.stdout:
-            with self._lock:
-                self.lines.append(line.rstrip('\n'))
-                if len(self.lines) > MAX_TAIL:
-                    del self.lines[:len(self.lines) - MAX_TAIL]
-        self.returncode = self.proc.wait()
-        self.finished = time.time()
+        try:
+            for line in self.proc.stdout:
+                with self._lock:
+                    self.lines.append(line.rstrip('\n'))
+                    if len(self.lines) > MAX_TAIL:
+                        del self.lines[:len(self.lines) - MAX_TAIL]
+        finally:
+            # Close the pipe explicitly. Popen holds the read end open until the
+            # object is collected, and during a long session that is one OS
+            # handle per command ever launched.
+            try:
+                self.proc.stdout.close()
+            except Exception:
+                pass
+            self.returncode = self.proc.wait()
+            self.finished = time.time()
 
     def running(self):
         return self.finished is None
@@ -111,6 +122,22 @@ class Job:
 
 JOBS = {}
 _job_seq = [0]
+_jobs_lock = threading.Lock()
+
+
+def reap_jobs():
+    """Drop the oldest FINISHED jobs once we are over the cap.
+
+    Nothing used to leave JOBS, so a dashboard left open through a competition
+    day accumulated every command ever launched — each holding its output tail,
+    its argv and a Popen object. Running jobs are never evicted, however many
+    there are; only completed history is trimmed, newest kept.
+    """
+    with _jobs_lock:
+        done = sorted((j for j in JOBS.values() if not j.running()),
+                      key=lambda j: j.finished or 0.0)
+        for job in done[:max(0, len(done) - MAX_JOBS)]:
+            JOBS.pop(job.id, None)
 
 
 def launch(cmd_id, extra):
@@ -125,13 +152,16 @@ def launch(cmd_id, extra):
     argv, shown = atlas.build(cmd, extra, env, ctx)
     if ctx == 'docker':
         argv = [a for a in argv if a != '-it']      # no tty behind a web server
-    _job_seq[0] += 1
-    job_id = f'j{_job_seq[0]}'
+    with _jobs_lock:
+        _job_seq[0] += 1
+        job_id = f'j{_job_seq[0]}'
     try:
-        JOBS[job_id] = Job(job_id, cmd_id, argv, f'[{ctx}] {shown}')
+        job = Job(job_id, cmd_id, argv, f'[{ctx}] {shown}')
     except Exception as e:
         return None, f'could not start: {e}'
-    return JOBS[job_id], None
+    JOBS[job_id] = job
+    reap_jobs()
+    return job, None
 
 
 # ── legacy helpers (raceline studio + the opponent demo) ─────────────────────
@@ -300,12 +330,23 @@ class Handler(BaseHTTPRequestHandler):
         p = os.path.join(REPO, 'runtime', 'bayes_log.jsonl')
         recs = []
         if os.path.exists(p):
-            with open(p) as f:
-                for line in f:
-                    try:
-                        recs.append(json.loads(line))
-                    except Exception:
-                        pass
+            # Read only the tail. bayes_log.jsonl is append-only across every
+            # tuning session ever run, so slurping the whole file to then keep
+            # the last 200 records makes each request cost more the longer the
+            # team has owned the car.
+            with open(p, 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                start = max(0, f.tell() - MAX_LOG_BYTES)
+                f.seek(start)
+                blob = f.read().decode('utf-8', 'replace')
+            lines = blob.splitlines()
+            if start:
+                lines = lines[1:]              # first line is probably partial
+            for line in lines:
+                try:
+                    recs.append(json.loads(line))
+                except Exception:
+                    pass
         best = None
         bp = os.path.join(REPO, 'runtime', 'bayes_best.json')
         if os.path.exists(bp):
