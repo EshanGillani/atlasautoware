@@ -166,13 +166,20 @@ class Objective:
 
     def __init__(self, raceline, backend='grip', trials=12, wall=0.9,
                  mu=1.0489, sv_max=3.2, max_steer=0.41, wheelbase=0.33,
-                 min_success=0.9, seed=0, map_path=None, laps=2):
+                 min_success=0.9, seed=0, map_path=None, laps=2, mus=None):
         self.rx, self.ry, self.rh, self.rc, self.base_speed = \
             cl.load_raceline(raceline)
         self.ds = segment_lengths(self.rx, self.ry)
         self.backend = backend
         self.trials = int(trials)
         self.wall = float(wall)
+        # Grip values every candidate must survive.  Tuning at a single mu
+        # optimizes for one exact surface and silently rewards setups that sit
+        # on the edge of the tyres: the fastest config found at mu 1.05 can be
+        # 100% reliable there and 0% at 0.90, which is one dusty patch, one set
+        # of worn tyres, or one sagging battery away.  Scoring across a range
+        # is what makes "consistent" mean "still finishes on a bad day".
+        self.mus = [float(m) for m in (mus if mus else [mu])]
         self.mu, self.sv_max = float(mu), float(sv_max)
         self.max_steer, self.wheelbase = float(max_steer), float(wheelbase)
         self.min_success = float(min_success)
@@ -225,20 +232,40 @@ class Objective:
         if self.backend == 'gym':
             return self._score_gym(cfg, speeds, mpc)
 
-        laps, ok, caps = [], 0, []
         v0 = float(speeds[0])                       # flying start
-        for (dx, dy, dyaw) in self.starts:
-            mpc.reset()                     # every trial starts identically
-            r = run_lap_grip(ctrl, self.rx, self.ry, self.rh, mu=self.mu,
-                             sv_max=self.sv_max, max_steer=self.max_steer,
-                             wheelbase=self.wheelbase, start_offset=(dx, dy, dyaw),
-                             v0=v0, a_accel=cfg['a_accel'], a_brake=cfg['a_brake'])
-            caps.append(r['grip_capped'])
-            wide = float(r['xte'].max()) if len(r['xte']) else float('inf')
-            if r['completed'] and wide < self.wall:
-                ok += 1
-                laps.append(r['lap_time'])
-        return self._combine(laps, ok, dict(grip_capped=float(np.mean(caps))))
+        per_mu, scores = {}, []
+        for mu in self.mus:
+            laps, ok, caps = [], 0, []
+            for (dx, dy, dyaw) in self.starts:
+                mpc.reset()                 # every trial starts identically
+                r = run_lap_grip(ctrl, self.rx, self.ry, self.rh, mu=mu,
+                                 sv_max=self.sv_max, max_steer=self.max_steer,
+                                 wheelbase=self.wheelbase,
+                                 start_offset=(dx, dy, dyaw), v0=v0,
+                                 a_accel=cfg['a_accel'], a_brake=cfg['a_brake'])
+                caps.append(r['grip_capped'])
+                wide = float(r['xte'].max()) if len(r['xte']) else float('inf')
+                if r['completed'] and wide < self.wall:
+                    ok += 1
+                    laps.append(r['lap_time'])
+            score, info = self._combine(laps, ok,
+                                        dict(grip_capped=float(np.mean(caps))))
+            scores.append(score)
+            per_mu[f'{mu:.2f}'] = dict(success=info['success'],
+                                       mean_lap=info.get('mean_lap'))
+        if len(self.mus) == 1:
+            mu0 = per_mu[f'{self.mus[0]:.2f}']
+            return scores[0], dict(success=mu0['success'],
+                                   mean_lap=mu0['mean_lap'], per_mu=per_mu)
+        # Mean across grip levels. A config that is quick at nominal grip but
+        # cannot finish at the low end takes a FAIL_SCORE into the average and
+        # loses to a slightly slower one that survives the whole range -- which
+        # is the trade the search is supposed to be making.
+        nominal = per_mu[f'{self.mus[0]:.2f}']
+        return float(np.mean(scores)), dict(
+            success=min(m['success'] for m in per_mu.values()),
+            mean_lap=nominal['mean_lap'], per_mu=per_mu,
+            worst_mu=min(per_mu, key=lambda k: per_mu[k]['success']))
 
     def _score_gym(self, cfg, speeds, mpc):
         """Real f110_gym dynamics — slower, but with true collision detection."""
@@ -347,6 +374,11 @@ def main():
     ap.add_argument('--laps', type=int, default=2, help='laps per trial (gym)')
     ap.add_argument('--mu', type=float, default=1.0489,
                     help='tyre friction — sweep this to bracket the real surface')
+    ap.add_argument('--mu-range', type=float, nargs='+', default=None,
+                    metavar='MU',
+                    help='score every candidate at these friction values and '
+                         'average, so the winner has to survive a worse surface '
+                         'than the nominal one (e.g. --mu-range 1.05 0.95 0.85)')
     ap.add_argument('--wall', type=float, default=0.9,
                     help='cross-track (m) counted as leaving the track')
     ap.add_argument('--min-success', type=float, default=0.9,
@@ -361,16 +393,21 @@ def main():
     os.makedirs(RUNTIME, exist_ok=True)
     obj = Objective(args.raceline, backend=args.backend, trials=args.trials,
                     wall=args.wall, mu=args.mu, min_success=args.min_success,
-                    seed=args.seed, map_path=args.map, laps=args.laps)
+                    seed=args.seed, map_path=args.map, laps=args.laps,
+                    mus=args.mu_range)
     names = [s[0] for s in SPACE]
     opt = BayesOpt(SPACE, n_init=args.init, seed=args.seed)
 
     print(f'raceline  {os.path.basename(args.raceline)}  '
           f'({len(obj.rx)} pts, base v {obj.base_speed.min():.1f}-'
           f'{obj.base_speed.max():.1f} m/s)')
-    print(f'backend   {args.backend}   mu {args.mu}   '
-          f'{args.trials} perturbed starts per candidate')
-    print(f'objective mean lap / success rate, floor {args.min_success:.0%}\n')
+    grip = ('mu ' + ', '.join(f'{m:g}' for m in obj.mus)) if len(obj.mus) > 1 \
+        else f'mu {args.mu:g}'
+    print(f'backend   {args.backend}   {grip}   '
+          f'{args.trials} perturbed starts per candidate'
+          + (f' x {len(obj.mus)} grip levels' if len(obj.mus) > 1 else ''))
+    print(f'objective mean lap / success rate, floor {args.min_success:.0%}'
+          + (', averaged across grip' if len(obj.mus) > 1 else '') + '\n')
 
     # The GP models log(score).  Lap time and the failure penalty then live on
     # one multiplicative scale, so a crashed candidate is "much worse" without

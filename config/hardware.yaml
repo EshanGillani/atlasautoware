@@ -86,8 +86,17 @@ raceline_mpc:
                                 # step-steer test, lidar timestamp vs yaw-rate onset)
     max_lat_accel: 6.0          # m/s^2 grip budget (governor + profiler)
     aeb_decel: 6.0              # m/s^2 assumed braking for dynamic AEB range
-    refine_corridor: 0.0        # m min-curvature refinement; 0 = off.  Enable
-                                # (start 0.15) only after checking wall clearance
+    refine_corridor: 0.0        # m min-curvature refinement; 0 = off.
+                                # KEEP 0 ON comp_track.  Measured against
+                                # maps/comp_track.yaml: comp_raceline.csv already
+                                # runs with only ~0.056 m between the car body
+                                # (0.15 m half-width) and the wall at its
+                                # tightest point.  The refiner bounds excursion
+                                # from the input line but knows nothing about the
+                                # map, so a 0.10 m corridor puts the body 0.043 m
+                                # INSIDE the wall and 0.20 m touches it outright.
+                                # Re-measure clearance on any new track before
+                                # enabling this.
     reprofile_speeds: true      # friction-limited speeds from curvature at load
     profile_a_accel: 4.0        # m/s^2 engine limit
     profile_a_brake: 8.0        # m/s^2 braking limit
