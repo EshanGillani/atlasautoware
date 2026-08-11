@@ -157,7 +157,7 @@ every session you have recorded.
 ### 4.5 Search for a faster setup
 
 ```bash
-atlas run bayes-tune -- --iters 40
+atlas run bayes-tune -- --iters 40 --mu-range 1.05 0.95 0.90
 ```
 
 A Gaussian process models lap time as a function of ten parameters (grip budget,
@@ -165,6 +165,44 @@ accel and brake limits, speed ceiling and scale, and the five MPC cost weights),
 and each run is spent where the model says the most is to be learned. It is
 scored on **expected time to complete a lap including restarts after a crash**,
 so it will not sell you half a second in exchange for spinning one lap in four.
+
+**Always pass `--mu-range`.** Tuning at a single friction value optimizes for one
+exact surface and quietly rewards setups sitting on the edge of the tyres.
+Measured on comp_track, the winner of a fixed-mu search lapped 35.28 s and was
+100% reliable across 120 unseen perturbed starts — and 0% once friction dropped
+from 0.95 to 0.90. One dusty patch from not finishing. Scoring across a range is
+what makes "consistent" mean "still finishes on a bad day".
+
+Note what that implies about perturbed starts: they barely test this stack. The
+controller converges back to the same line within a corner, and lap times across
+perturbed starts vary by about 0.01 s. **Grip is the axis that ends races.**
+
+### 4.6 Decide how much margin to buy
+
+```bash
+python3 tools/robustness_frontier.py --top 10 --trials 8
+```
+
+Re-scores the tuning candidates across a fine grip grid, on starting poses the
+tuner never saw, and prints the Pareto frontier — lap time against the lowest
+friction each setup still completes at:
+
+```
+survives down to       lap    cost
+        mu 0.95     35.27s   +0.00s
+        mu 0.80     39.89s   +4.62s
+        mu 0.75     40.75s   +5.48s
+```
+
+Pick the lowest grip you actually want to survive, then take the fastest row at
+or below it. Make that call with the track in front of you: a clean carpet on
+fresh tyres is a different decision from a dusty hall on the third run of the
+day. Setups that another beats on *both* axes are omitted, so everything listed
+is a genuine choice.
+
+Treat the mu values as relative margin, not as a number you can measure on your
+track. What they tell you is how much surface degradation a setup absorbs before
+it stops finishing.
 
 Everything is logged to `runtime/bayes_log.jsonl`; `--resume` continues where a
 previous session stopped, which matters when a practice slot ends mid-search.

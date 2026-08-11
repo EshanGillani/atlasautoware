@@ -79,6 +79,14 @@ class RacelineMPC(Node):
         self.declare_parameter('profile_a_accel', 4.0)  # m/s^2 engine limit
         self.declare_parameter('profile_a_brake', 8.0)  # m/s^2 braking limit
         self.declare_parameter('profile_v_max', 8.0)    # m/s profile ceiling
+        # MPC cost weights.  These are what tools/bayes_tune.py searches over,
+        # so without them on the node the tuned controller has no way onto the
+        # car and only the speed-profile half of a tuning result is deployable.
+        self.declare_parameter('mpc_horizon', 12)       # prediction steps
+        self.declare_parameter('mpc_q_pos', 28.0)       # position tracking
+        self.declare_parameter('mpc_q_yaw', 6.0)        # heading tracking
+        self.declare_parameter('mpc_q_v', 2.5)          # speed tracking
+        self.declare_parameter('mpc_rd_steer', 12.0)    # steer-rate penalty
         scan_topic  = self.get_parameter('scan_topic').value
         odom_topic  = self.get_parameter('odom_topic').value
         drive_topic = self.get_parameter('drive_topic').value
@@ -132,12 +140,22 @@ class RacelineMPC(Node):
             f'(x{self.v_scale:.2f}) from {os.path.basename(rl)}')
 
         # ── MPC (with pure-pursuit fallback) ───────────────────────────────────
-        self.mpc = KinematicMPC(wheelbase=self.L, max_steer=self.max_steer,
-                                v_max=self.v_max + 0.5)
+        self.mpc = KinematicMPC(
+            wheelbase=self.L, max_steer=self.max_steer, v_max=self.v_max + 0.5,
+            horizon=int(self.get_parameter('mpc_horizon').value),
+            max_accel=float(self.get_parameter('profile_a_accel').value),
+            max_brake=float(self.get_parameter('profile_a_brake').value),
+            q_pos=float(self.get_parameter('mpc_q_pos').value),
+            q_yaw=float(self.get_parameter('mpc_q_yaw').value),
+            q_v=float(self.get_parameter('mpc_q_v').value),
+            rd_steer=float(self.get_parameter('mpc_rd_steer').value))
         if self.mpc.available:
             self.mpc.set_raceline(self.rl_x, self.rl_y, self.rl_hdg,
                                   self.rl_curv, self.rl_speed)
-            self.get_logger().info('controller: MPC (kinematic LTV, osqp)')
+            self.get_logger().info(
+                f'controller: MPC (kinematic LTV, osqp) N={self.mpc.N} '
+                f'q_pos={self.get_parameter("mpc_q_pos").value} '
+                f'rd_steer={self.get_parameter("mpc_rd_steer").value}')
         else:
             self.get_logger().warning(
                 'osqp not available — using MAP fallback full-time '

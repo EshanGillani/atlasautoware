@@ -78,6 +78,13 @@ class RLAgent(Node):
         self.declare_parameter('min_speed', 0.6)
         self.declare_parameter('max_lat_accel', 6.0)
         self.declare_parameter('max_infer_ms', 8.0)     # policy time budget
+        # MPC cost weights — must match what the policy was trained against,
+        # since the policy learned a correction to THIS controller's behaviour.
+        self.declare_parameter('mpc_horizon', 12)
+        self.declare_parameter('mpc_q_pos', 28.0)
+        self.declare_parameter('mpc_q_yaw', 6.0)
+        self.declare_parameter('mpc_q_v', 2.5)
+        self.declare_parameter('mpc_rd_steer', 12.0)
 
         g = self.get_parameter
         scan_topic = g('scan_topic').value
@@ -107,8 +114,12 @@ class RLAgent(Node):
             f'm/s from {os.path.basename(rl)}')
 
         # ── controllers ───────────────────────────────────────────────────────
-        self.mpc = KinematicMPC(wheelbase=self.L, max_steer=self.max_steer,
-                                v_max=self.v_max + 0.5)
+        self.mpc = KinematicMPC(
+            wheelbase=self.L, max_steer=self.max_steer, v_max=self.v_max + 0.5,
+            horizon=int(g('mpc_horizon').value),
+            q_pos=float(g('mpc_q_pos').value), q_yaw=float(g('mpc_q_yaw').value),
+            q_v=float(g('mpc_q_v').value),
+            rd_steer=float(g('mpc_rd_steer').value))
         if self.mpc.available:
             self.mpc.set_raceline(self.rl_x, self.rl_y, self.rl_hdg,
                                   self.rl_curv, self.rl_speed)

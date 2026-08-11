@@ -510,6 +510,14 @@ def apply_to_hardware(cfg):
         'profile_a_accel': cfg['a_accel'],
         'profile_a_brake': cfg['a_brake'],
         'profile_v_max': cfg['v_max'],
+        # The controller half of the result. Without these the search's MPC
+        # weights never reach the car and only the speed profile is deployed —
+        # which is not the setup that was measured.
+        'mpc_q_pos': cfg['q_pos'],
+        'mpc_q_yaw': cfg['q_yaw'],
+        'mpc_q_v': cfg['q_v'],
+        'mpc_rd_steer': cfg['rd_steer'],
+        'mpc_horizon': cfg['horizon'],
     }
     try:
         with open(path) as f:

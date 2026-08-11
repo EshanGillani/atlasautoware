@@ -103,3 +103,26 @@ raceline_mpc:
     profile_v_max: 8.0          # m/s profile ceiling
     v_scale: 0.5                # global speed cap — raise as confidence grows
     control_hz: 50.0
+    # MPC cost weights.  These are what tools/bayes_tune.py searches over, and
+    # `bayes_tune --apply` writes the winner back here — so a tuning result is
+    # deployed whole rather than only its speed-profile half.
+    #
+    # These are the controller's conservative DEFAULTS, deliberately left alone:
+    # tuned values come from a first-order grip model, not from your car on your
+    # surface, so they are a starting hypothesis to validate, not a setting to
+    # inherit.  Apply a tuned setup explicitly once you have driven it:
+    #
+    #   python3 tools/bayes_tune.py --mu-range 1.05 0.95 0.90 --apply
+    #
+    # For reference, the best simulated setup on comp_track (35.7 s nominal,
+    # 100% down to mu 0.88, and never saturating the tyres — unlike a 35.3 s
+    # setup that rides the grip limit a quarter of the lap and stops finishing
+    # at 0.90) was:
+    #   mpc_horizon 13  q_pos 51.6  q_yaw 1.0  q_v 1.35  rd_steer 5.66
+    #   max_lat_accel 5.05  profile_a_accel 3.26  profile_a_brake 5.86
+    #   profile_v_max 8.44  v_scale 1.26
+    mpc_horizon: 12             # prediction steps
+    mpc_q_pos: 28.0             # position tracking
+    mpc_q_yaw: 6.0              # heading tracking
+    mpc_q_v: 2.5                # speed tracking
+    mpc_rd_steer: 12.0          # steer-rate penalty (lower = more responsive)
