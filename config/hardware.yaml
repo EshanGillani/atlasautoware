@@ -121,20 +121,22 @@ raceline_mpc:
     #
     #   python3 tools/bayes_tune.py --mu-range 1.05 0.95 0.90 --apply
     #
-    # For reference, the best simulated setup on comp_track (35.7 s nominal,
-    # 100% down to mu 0.88, and never saturating the tyres — unlike a 35.3 s
-    # setup that rides the grip limit a quarter of the lap and stops finishing
-    # at 0.90) was:
-    #   mpc_horizon 13  q_pos 51.6  q_yaw 1.0  q_v 1.35  rd_steer 5.66
-    #   max_lat_accel 5.05  profile_a_accel 3.26  profile_a_brake 5.86
-    #   profile_v_max 8.44  v_scale 1.26
+    # Best simulated setup on comp_track, searched WITH this car's 100 ms
+    # actuation delay and max_steer 0.36.  Verified over 12 unseen starts at
+    # each grip level: 41.60 s and 100% all the way from mu 1.05 down to 0.80,
+    # never saturating the tyres.
+    #   mpc_horizon 12  q_pos 45.0  q_yaw 8.9  q_v 3.19  rd_steer 21.4
+    #   max_lat_accel 4.56  profile_a_accel 3.38  profile_a_brake 6.70
+    #   profile_v_max 7.08  v_scale 1.32
     #
-    # CAUTION: that search predates the sensored-motor / FSESC 6.7 change, and
-    # its profile_a_accel of 3.26 was chosen when 4.0 was the assumed engine
-    # limit.  With the 6.0 this drivetrain actually delivers, raising a_accel
-    # alone drops the nominal lap to 33.4 s but breaks the car at mu 0.90, so
-    # the rest of the parameters have to be re-searched around it rather than
-    # edited by hand.  Re-run the tuner before trusting the numbers above.
+    # Note rd_steer 21.4 rather than the ~5.7 a latency-free search picks.  With
+    # 100 ms of lag an aggressive steering correction arrives after the car has
+    # already moved, so the optimizer damps the steering hard.  That is the
+    # single clearest sign a tuning result was produced without modelling delay.
+    #
+    # An earlier latency-free search reported 35.7 s for this track.  That
+    # number was never real: measured against the actual 100 ms it is 41.9 s and
+    # 0% reliable at mu 0.90.  Do not chase it.
     mpc_horizon: 12             # prediction steps
     mpc_q_pos: 28.0             # position tracking
     mpc_q_yaw: 6.0              # heading tracking
