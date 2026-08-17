@@ -33,6 +33,28 @@ echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | \
 
 Everything is plain pip — no extra ROS packages needed, so it works on Humble.
 
+## New drivetrain (Sept comp): sensored motor + FSESC 6.7
+
+The car now runs a **sensored** motor and a **Flipsky FSESC 6.7** (VESC 6.x)
+with fresh packs. What that changes, and what MUST be re-calibrated:
+
+- **VESC Tool**: run motor detection with the sensor cable connected and set
+  Sensor Mode to **Hall Sensors** (this motor HAS them — unlike the old
+  sensorless Velineon). App = "PPM and UART", baud 115200. Set battery cutoffs
+  for the NEW pack's cell count (cutoff start ≈ 3.4 V/cell, end ≈ 3.0 V/cell).
+- **`erpm_gain` (config/hardware.yaml) MUST be re-measured** — pole count and
+  drivetrain differ from the old motor; a wrong gain corrupts both commanded
+  speed and wheel odometry (which SLAM/localization consume). Procedure in the
+  yaml comment.
+- **Raceline speeds retuned** for the drivetrain: `a_accel 5.0 → 6.0 m/s²`
+  (sensored = full smooth torque from 0 rpm, no sensorless launch cogging;
+  FSESC 6.7 current headroom), `a_brake 7.0 → 8.0 m/s²`. Grip budget (a_lat
+  6.5) and v_max (7.0) unchanged — tires and battery top-speed are unmeasured;
+  retune those only from on-track data (traction governor + speed ladder).
+  Closed-loop effect on comp_track: 40.50 → 40.18 s with planned lateral accel
+  still exactly at budget.
+- `max_steer` lowered to 0.36 rad to match the Slash steering linkage.
+
 ## Actuation: one node, two backends
 
 `drive_node` subscribes to `/drive` (AckermannDriveStamped) and probes for

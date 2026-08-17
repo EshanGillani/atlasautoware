@@ -9,7 +9,8 @@ drive_node:
     backend: 'auto'             # auto | pca9685 | vesc — auto probes both
     # shared actuation calibration
     max_speed: 7.0              # m/s at full throttle (start LOW, e.g. 2.0)
-    max_steer: 0.41             # rad at full servo throw
+    max_steer: 0.36             # rad at full servo throw (Traxxas Slash linkage;
+                                # 0.41 overdrives the servo into the stops)
     steer_invert: false
     steer_trim_us: 0.0          # pulse offset to drive straight
     cmd_timeout: 0.5            # s without /drive -> neutral
@@ -28,7 +29,12 @@ drive_node:
     # vesc-uart backend (direct serial; also publishes wheel-speed odom)
     serial_port: '/dev/ttyACM0'
     serial_baud: 115200
-    erpm_gain: 4614.0           # erpm per m/s (poles, gear ratio, wheel dia)
+    erpm_gain: 4614.0           # erpm per m/s — RE-MEASURE for the NEW sensored
+                                # motor + FSESC 6.7: erpm_gain = (poles/2) * gear
+                                # ratio * 60 / (pi * wheel_dia_m). Wrong gain =
+                                # wrong speed scaling AND wrong odometry. Calibrate:
+                                # command 2.0 m/s, measure true speed over 5 m,
+                                # scale gain until they match.
     odom_topic: '/vesc/odom'
     odom_frame: 'odom'
     base_frame: 'base_link'
@@ -98,8 +104,9 @@ raceline_mpc:
                                 # Re-measure clearance on any new track before
                                 # enabling this.
     reprofile_speeds: true      # friction-limited speeds from curvature at load
-    profile_a_accel: 4.0        # m/s^2 engine limit
-    profile_a_brake: 8.0        # m/s^2 braking limit
+    profile_a_accel: 6.0        # m/s^2 engine limit (sensored motor: full smooth
+                                # torque from 0 rpm + FSESC 6.7 current headroom)
+    profile_a_brake: 8.0        # m/s^2 braking limit (VESC 6 regen current)
     profile_v_max: 8.0          # m/s profile ceiling
     v_scale: 0.5                # global speed cap — raise as confidence grows
     control_hz: 50.0
