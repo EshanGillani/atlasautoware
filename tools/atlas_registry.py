@@ -235,6 +235,25 @@ COMMANDS = [
              'gets it racing in far fewer steps than learning from scratch.',
     ),
     dict(
+        id='train-duel', group='learning', kind='python',
+        target='tools/train_duel.py',
+        env='gym', where='host', needs=['numpy', 'torch'],
+        title='Train the style-conditioned overtaking policy (SAC)',
+        args=[('--steps', 'environment steps to train for', '200000'),
+              ('--authority', 'how much the policy may bend the decision (0..1)',
+               '1.0'),
+              ('--style', 'fix the style instead of sampling it', None),
+              ('--out', 'checkpoint directory', 'runtime/duel')],
+        long='Learns a bounded correction to the race brain\'s DECISION -- the '
+             'lateral offset and speed factor it already emits -- rather than to '
+             'raw control. The mode (CRUISE/ATTACK/DEFEND/EVADE) stays '
+             'rule-based and readable, spliner still generates the geometry, '
+             'and AEB is still downstream, so an untrained policy races exactly '
+             'as the existing brain does. Style is resampled every episode so '
+             'one network covers conservative through aggressive; check the '
+             'per-style columns actually separate before trusting the knob.',
+    ),
+    dict(
         id='eval-rl', group='learning', kind='python', target='tools/eval_rl.py',
         env='gym', where='host', needs=['numpy', 'torch'],
         title='Evaluate a trained policy against the MPC baseline',

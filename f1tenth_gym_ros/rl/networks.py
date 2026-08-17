@@ -60,19 +60,28 @@ class LidarEncoder(nn.Module):
 
 
 class Torso(nn.Module):
-    """Lidar embedding + physical state -> shared hidden representation."""
+    """Lidar embedding + physical state -> shared hidden representation.
+
+    `n_beams=0` means the observation has no range image at all — the
+    decision-layer policy (rl/duel.py) reasons over gaps and closing speeds,
+    not raw lidar.  The convolutional encoder is then skipped entirely rather
+    than fed a zero-length input, and this is a plain MLP.
+    """
 
     def __init__(self, n_beams, n_state, hidden=256, embed=64):
         super().__init__()
         self.n_beams = int(n_beams)
-        self.encoder = LidarEncoder(self.n_beams, embed)
+        self.encoder = LidarEncoder(self.n_beams, embed) if self.n_beams else None
+        in_dim = (embed if self.encoder is not None else 0) + n_state
         self.mlp = nn.Sequential(
-            nn.Linear(embed + n_state, hidden), nn.ReLU(inplace=True),
+            nn.Linear(in_dim, hidden), nn.ReLU(inplace=True),
             nn.Linear(hidden, hidden), nn.ReLU(inplace=True),
         )
         self.out_dim = hidden
 
     def forward(self, obs):                          # (B, n_beams + n_state)
+        if self.encoder is None:
+            return self.mlp(obs)
         lidar, state = obs[:, :self.n_beams], obs[:, self.n_beams:]
         return self.mlp(torch.cat([self.encoder(lidar), state], dim=1))
 

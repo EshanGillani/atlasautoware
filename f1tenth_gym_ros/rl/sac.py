@@ -214,7 +214,15 @@ class SAC:
         dev = torch.device(device or ('cuda' if torch.cuda.is_available()
                                       else 'cpu'))
         ckpt = torch.load(path, map_location=dev, weights_only=False)
-        spec = ObsSpec.from_dict(ckpt['spec'])
+        stored = ckpt['spec']
+        # A decision-layer policy has no lidar block, so it must be rebuilt as
+        # a flat spec — reconstructing it as an ObsSpec would silently give the
+        # network a CNN encoder the checkpoint has no weights for.
+        if stored.get('flat') or stored.get('n_beams') == 0:
+            from .duel import FlatObsSpec
+            spec = FlatObsSpec.from_dict(stored)
+        else:
+            spec = ObsSpec.from_dict(stored)
         agent = SAC(spec, action_dim=int(ckpt.get('action_dim', 2)),
                     hidden=hidden, device=str(dev))
         agent.actor.load_state_dict(ckpt['actor'])
