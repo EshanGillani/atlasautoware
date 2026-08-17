@@ -71,7 +71,7 @@ sys.path.insert(0, os.path.join(REPO, 'f1tenth_gym_ros'))
 
 import closed_loop as cl                                   # noqa: E402
 from bayes_opt import BayesOpt                             # noqa: E402
-from mpc_controller import KinematicMPC                    # noqa: E402
+from mpc_controller import KinematicMPC, predict_state                    # noqa: E402
 from velocity_profiler import velocity_profile, segment_lengths   # noqa: E402
 
 RUNTIME = os.path.join(REPO, 'runtime')
@@ -82,12 +82,17 @@ BEST = os.path.join(RUNTIME, 'bayes_best.json')
 # range that excludes the optimum is the one failure mode you cannot recover
 # from by running longer.
 SPACE = [
-    ('a_lat',    4.5, 9.0),      # m/s^2 lateral grip budget for the profiler
+    # a_lat and q_pos were widened after a 45-evaluation run pinned both flat
+    # against a boundary -- the ten fastest robust configs sat at a_lat
+    # 4.50-5.50 against a floor of 4.50, and q_pos 36.9-60.0 against a ceiling
+    # of 60.0. A search pressed against its own limits is reporting the edge of
+    # the box, not the optimum, so the box has to move.
+    ('a_lat',    2.5, 9.0),      # m/s^2 lateral grip budget for the profiler
     ('a_accel',  2.5, 6.0),      # m/s^2 engine limit
     ('a_brake',  4.0, 11.0),     # m/s^2 braking limit
     ('v_max',    5.0, 9.0),      # m/s profile ceiling
-    ('v_scale',  0.85, 1.35),    # global multiplier on the profile
-    ('q_pos',   12.0, 60.0),     # MPC position-tracking weight
+    ('v_scale',  0.85, 1.60),    # global multiplier on the profile
+    ('q_pos',   12.0, 140.0),    # MPC position-tracking weight
     ('q_yaw',    1.0, 18.0),     # MPC heading weight
     ('q_v',      0.5, 8.0),      # MPC speed weight
     ('rd_steer', 3.0, 30.0),     # MPC steer-rate penalty (smoothness)
@@ -110,14 +115,22 @@ FAIL_SCORE = 300.0
 # ── the plant ────────────────────────────────────────────────────────────────
 def run_lap_grip(control_fn, rx, ry, rh, mu, sv_max, max_steer, wheelbase=0.33,
                  start_offset=(0.15, -0.1, 0.0), v0=2.0, dt=0.02,
-                 max_steps=12000, settle=100, a_accel=4.0, a_brake=8.0):
-    """One lap with steering slew-rate and lateral-grip limits.
+                 max_steps=12000, settle=100, a_accel=4.0, a_brake=8.0,
+                 actuator_delay=0.0, abort_xte=0.0):
+    """One lap with steering slew-rate, lateral-grip limits and actuation delay.
 
     Mirrors tools/dynamic_sweep.py: the commanded steer is slewed at the
     servo's rate, then clamped to what the tyres can actually deliver at the
     current speed.  The gap between commanded and achievable steer *is* the
     understeer that runs a car wide, so a config that asks for more grip than
     it has fails here for the same reason it fails on the track.
+
+    `actuator_delay` (s) holds each command in a FIFO before the plant sees it.
+    Without it the search optimizes a car that reacts instantly, and cannot
+    tell a delay-tolerant setup from one that only works with zero latency --
+    while the real car runs ~100 ms of sensor-to-actuator lag (serial links,
+    servo travel, ESC ramp).  tools/benchmark_delay.py shows an uncompensated
+    0.12 s taking a lap from 40.5 s to 59.7 s, so this is not a rounding error.
     """
     n = len(rx)
     px = float(rx[0]) + start_offset[0]
@@ -127,6 +140,8 @@ def run_lap_grip(control_fn, rx, ry, rh, mu, sv_max, max_steer, wheelbase=0.33,
     prev_j = cum = 0
     t = 0.0
     xte, idx, capped = [], [], 0
+    delay_steps = int(round(float(actuator_delay) / dt))
+    pipeline = [(0.0, float(v0))] * delay_steps      # commands in flight
     for _ in range(max_steps):
         j = int(np.argmin((rx - px) ** 2 + (ry - py) ** 2))
         d = j - prev_j
@@ -136,7 +151,11 @@ def run_lap_grip(control_fn, rx, ry, rh, mu, sv_max, max_steer, wheelbase=0.33,
             cum += d
         prev_j = j
 
-        target_steer, v_t = control_fn(px, py, yaw, v, j)
+        cmd = control_fn(px, py, yaw, v, j)
+        if delay_steps:                              # the actuator is behind us
+            pipeline.append(cmd)
+            cmd = pipeline.pop(0)
+        target_steer, v_t = cmd
         delta += float(np.clip(target_steer - delta, -sv_max * dt, sv_max * dt))
         grip_delta = math.atan(mu * G * wheelbase / max(v * v, 1e-3))
         lim = min(max_steer, grip_delta)
@@ -149,9 +168,18 @@ def run_lap_grip(control_fn, rx, ry, rh, mu, sv_max, max_steer, wheelbase=0.33,
         yaw += v * math.tan(delta) / wheelbase * dt
         v = max(0.0, v + a * dt)
         t += dt
-        xte.append(cl.cross_track(px, py, rx, ry, j))
+        e = cl.cross_track(px, py, rx, ry, j)
+        xte.append(e)
         idx.append(j)
         if cum >= n:
+            break
+        if abort_xte and e > abort_xte:
+            # The lap is already lost: the caller scores success as
+            # "completed AND max cross-track < wall", so once the car is past
+            # the wall no continuation can change the verdict. Simulating the
+            # remaining ~12k steps of a car ploughing through scenery is pure
+            # cost, and it dominates the search as soon as latency starts
+            # making candidates fail.
             break
     xte = np.array(xte)
     steady = xte[settle:] if len(xte) > settle else xte
@@ -160,13 +188,57 @@ def run_lap_grip(control_fn, rx, ry, rh, mu, sv_max, max_steer, wheelbase=0.33,
                 grip_capped=capped / max(len(xte), 1))
 
 
+class DelayCompensatedMPC:
+    """The MPC as raceline_mpc actually flies it, latency and all.
+
+    The node does not solve from the last measured pose when a delay is
+    configured: it integrates the kinematic model forward through the commands
+    still in flight and solves from where the car *will* be when the command
+    reaches the wheels.  Modelling the plant delay without also modelling that
+    compensation would make the search reject every quick setup for a problem
+    the deployed controller already handles -- so this mirrors the node,
+    including keeping its own copy of the in-flight command buffer.
+
+    Feeding predict_state the whole buffer (oldest first) rather than just the
+    newest command matters: holding one command over the window over-rotates
+    the prediction whenever the steer is changing, which is every corner.
+    """
+
+    def __init__(self, mpc, delay, wheelbase, dt, a_accel, a_brake):
+        self.mpc = mpc
+        self.delay = float(delay)
+        self.L = float(wheelbase)
+        self.a_accel, self.a_brake = float(a_accel), float(a_brake)
+        self.ticks = max(0, int(round(self.delay / dt)))
+        self.reset()
+
+    def reset(self):
+        self.mpc.reset()
+        self._buf = [(0.0, 0.0)] * self.ticks
+
+    def __call__(self, px, py, yaw, v, j):
+        if self.delay > 0.0 and self._buf:
+            px, py, yaw, v = predict_state(
+                px, py, yaw, v,
+                [c[0] for c in self._buf], [c[1] for c in self._buf],
+                self.delay, self.L,
+                a_accel=self.a_accel, a_brake=self.a_brake)
+        out = self.mpc.solve((px, py, yaw, v), j)
+        cmd = out if out is not None else (0.0, v)
+        if self.ticks:
+            self._buf.append(cmd)
+            self._buf.pop(0)
+        return cmd
+
+
 # ── objective ────────────────────────────────────────────────────────────────
 class Objective:
     """Turns a config dict into a score.  Lower is better."""
 
     def __init__(self, raceline, backend='grip', trials=12, wall=0.9,
                  mu=1.0489, sv_max=3.2, max_steer=0.41, wheelbase=0.33,
-                 min_success=0.9, seed=0, map_path=None, laps=2, mus=None):
+                 min_success=0.9, seed=0, map_path=None, laps=2, mus=None,
+                 delay=0.0, compensate=True):
         self.rx, self.ry, self.rh, self.rc, self.base_speed = \
             cl.load_raceline(raceline)
         self.ds = segment_lengths(self.rx, self.ry)
@@ -185,6 +257,9 @@ class Objective:
         self.min_success = float(min_success)
         self.map_path = map_path
         self.laps = int(laps)
+        self.delay = float(delay)
+        self.compensate = bool(compensate)
+        self.dt = 0.02                      # plant tick, matches run_lap_grip
         # One fixed set of perturbed starts, shared by every candidate: the
         # configs must be compared on identical conditions, otherwise the search
         # is just chasing which candidate drew the easier starts.
@@ -225,9 +300,13 @@ class Objective:
             raise SystemExit('osqp is not installed — the MPC cannot solve.\n'
                              'pip install osqp==0.6.3')
 
-        def ctrl(px, py, yaw, v, j):
-            out = mpc.solve((px, py, yaw, v), j)
-            return out if out is not None else (0.0, v)
+        if self.delay > 0.0 and self.compensate:
+            ctrl = DelayCompensatedMPC(mpc, self.delay, self.wheelbase, self.dt,
+                                       cfg['a_accel'], cfg['a_brake'])
+        else:
+            def ctrl(px, py, yaw, v, j):
+                out = mpc.solve((px, py, yaw, v), j)
+                return out if out is not None else (0.0, v)
 
         if self.backend == 'gym':
             return self._score_gym(cfg, speeds, mpc)
@@ -237,12 +316,19 @@ class Objective:
         for mu in self.mus:
             laps, ok, caps = [], 0, []
             for (dx, dy, dyaw) in self.starts:
-                mpc.reset()                 # every trial starts identically
+                # every trial starts identically — including the compensator's
+                # in-flight buffer, or trial N inherits trial N-1's last command
+                if isinstance(ctrl, DelayCompensatedMPC):
+                    ctrl.reset()            # also resets the wrapped MPC
+                else:
+                    mpc.reset()
                 r = run_lap_grip(ctrl, self.rx, self.ry, self.rh, mu=mu,
                                  sv_max=self.sv_max, max_steer=self.max_steer,
                                  wheelbase=self.wheelbase,
                                  start_offset=(dx, dy, dyaw), v0=v0,
-                                 a_accel=cfg['a_accel'], a_brake=cfg['a_brake'])
+                                 a_accel=cfg['a_accel'], a_brake=cfg['a_brake'],
+                                 actuator_delay=self.delay,
+                                 abort_xte=self.wall)
                 caps.append(r['grip_capped'])
                 wide = float(r['xte'].max()) if len(r['xte']) else float('inf')
                 if r['completed'] and wide < self.wall:
@@ -338,6 +424,19 @@ def _s(v):
         return float(v)
 
 
+def hardware_param(node, key, default):
+    """Read one value out of config/hardware.yaml, or fall back."""
+    path = os.path.join(REPO, 'config', 'hardware.yaml')
+    try:
+        import yaml
+        with open(path) as f:
+            cfg = yaml.safe_load(f) or {}
+        val = cfg.get(node, {}).get('ros__parameters', {}).get(key)
+        return float(val) if val is not None else default
+    except Exception:
+        return default
+
+
 def hardware_max_steer(default=0.41):
     """The car's actual steering limit, from config/hardware.yaml.
 
@@ -400,6 +499,13 @@ def main():
                          'than the nominal one (e.g. --mu-range 1.05 0.95 0.85)')
     ap.add_argument('--wall', type=float, default=0.9,
                     help='cross-track (m) counted as leaving the track')
+    ap.add_argument('--delay', type=float, default=None,
+                    help='sensor-to-actuator latency (s); defaults to '
+                         'raceline_mpc.actuation_delay in config/hardware.yaml. '
+                         'Pass 0 to reproduce the old latency-free search.')
+    ap.add_argument('--no-compensate', action='store_true',
+                    help='do NOT model the controller\'s delay compensation — '
+                         'shows what the latency costs you unmitigated')
     ap.add_argument('--max-steer', type=float, default=None,
                     help='steering limit (rad); defaults to drive_node.max_steer '
                          'in config/hardware.yaml so the search cannot silently '
@@ -415,10 +521,13 @@ def main():
 
     os.makedirs(RUNTIME, exist_ok=True)
     max_steer = args.max_steer if args.max_steer else hardware_max_steer()
+    delay = args.delay if args.delay is not None else \
+        hardware_param('raceline_mpc', 'actuation_delay', 0.0)
     obj = Objective(args.raceline, backend=args.backend, trials=args.trials,
                     wall=args.wall, mu=args.mu, min_success=args.min_success,
                     seed=args.seed, map_path=args.map, laps=args.laps,
-                    mus=args.mu_range, max_steer=max_steer)
+                    mus=args.mu_range, max_steer=max_steer, delay=delay,
+                    compensate=not args.no_compensate)
     names = [s[0] for s in SPACE]
     opt = BayesOpt(SPACE, n_init=args.init, seed=args.seed)
 
@@ -427,8 +536,12 @@ def main():
           f'{obj.base_speed.max():.1f} m/s)')
     grip = ('mu ' + ', '.join(f'{m:g}' for m in obj.mus)) if len(obj.mus) > 1 \
         else f'mu {args.mu:g}'
+    lag = (f'delay {delay*1000:.0f} ms'
+           + ('' if obj.compensate else ' UNCOMPENSATED')) if delay > 0 \
+        else 'no delay'
     print(f'backend   {args.backend}   {grip}   max_steer {max_steer:.2f} rad   '
-          f'{args.trials} perturbed starts per candidate'
+          f'{lag}')
+    print(f'          {args.trials} perturbed starts per candidate'
           + (f' x {len(obj.mus)} grip levels' if len(obj.mus) > 1 else ''))
     print(f'objective mean lap / success rate, floor {args.min_success:.0%}'
           + (', averaged across grip' if len(obj.mus) > 1 else '') + '\n')
