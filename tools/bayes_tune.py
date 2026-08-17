@@ -338,6 +338,25 @@ def _s(v):
         return float(v)
 
 
+def hardware_max_steer(default=0.41):
+    """The car's actual steering limit, from config/hardware.yaml.
+
+    Read rather than hardcoded because it is a property of the linkage that
+    changes with the car: the Traxxas Slash servo tops out at 0.36 rad and 0.41
+    drives it into the stops.  A search that assumes more steering than the car
+    has will happily hand back a setup that only works in simulation.
+    """
+    path = os.path.join(REPO, 'config', 'hardware.yaml')
+    try:
+        import yaml
+        with open(path) as f:
+            cfg = yaml.safe_load(f) or {}
+        val = cfg.get('drive_node', {}).get('ros__parameters', {}).get('max_steer')
+        return float(val) if val else default
+    except Exception:
+        return default
+
+
 # ── session ──────────────────────────────────────────────────────────────────
 def load_history(path, names):
     """Past evaluations, so --resume continues rather than restarting."""
@@ -381,6 +400,10 @@ def main():
                          'than the nominal one (e.g. --mu-range 1.05 0.95 0.85)')
     ap.add_argument('--wall', type=float, default=0.9,
                     help='cross-track (m) counted as leaving the track')
+    ap.add_argument('--max-steer', type=float, default=None,
+                    help='steering limit (rad); defaults to drive_node.max_steer '
+                         'in config/hardware.yaml so the search cannot silently '
+                         'assume more steering than the car has')
     ap.add_argument('--min-success', type=float, default=0.9,
                     help='reliability floor; below it a config is penalized hard')
     ap.add_argument('--seed', type=int, default=0)
@@ -391,10 +414,11 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(RUNTIME, exist_ok=True)
+    max_steer = args.max_steer if args.max_steer else hardware_max_steer()
     obj = Objective(args.raceline, backend=args.backend, trials=args.trials,
                     wall=args.wall, mu=args.mu, min_success=args.min_success,
                     seed=args.seed, map_path=args.map, laps=args.laps,
-                    mus=args.mu_range)
+                    mus=args.mu_range, max_steer=max_steer)
     names = [s[0] for s in SPACE]
     opt = BayesOpt(SPACE, n_init=args.init, seed=args.seed)
 
@@ -403,7 +427,7 @@ def main():
           f'{obj.base_speed.max():.1f} m/s)')
     grip = ('mu ' + ', '.join(f'{m:g}' for m in obj.mus)) if len(obj.mus) > 1 \
         else f'mu {args.mu:g}'
-    print(f'backend   {args.backend}   {grip}   '
+    print(f'backend   {args.backend}   {grip}   max_steer {max_steer:.2f} rad   '
           f'{args.trials} perturbed starts per candidate'
           + (f' x {len(obj.mus)} grip levels' if len(obj.mus) > 1 else ''))
     print(f'objective mean lap / success rate, floor {args.min_success:.0%}'

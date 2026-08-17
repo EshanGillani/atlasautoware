@@ -128,6 +128,13 @@ raceline_mpc:
     #   mpc_horizon 13  q_pos 51.6  q_yaw 1.0  q_v 1.35  rd_steer 5.66
     #   max_lat_accel 5.05  profile_a_accel 3.26  profile_a_brake 5.86
     #   profile_v_max 8.44  v_scale 1.26
+    #
+    # CAUTION: that search predates the sensored-motor / FSESC 6.7 change, and
+    # its profile_a_accel of 3.26 was chosen when 4.0 was the assumed engine
+    # limit.  With the 6.0 this drivetrain actually delivers, raising a_accel
+    # alone drops the nominal lap to 33.4 s but breaks the car at mu 0.90, so
+    # the rest of the parameters have to be re-searched around it rather than
+    # edited by hand.  Re-run the tuner before trusting the numbers above.
     mpc_horizon: 12             # prediction steps
     mpc_q_pos: 28.0             # position tracking
     mpc_q_yaw: 6.0              # heading tracking
