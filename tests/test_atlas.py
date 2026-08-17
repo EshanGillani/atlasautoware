@@ -232,6 +232,19 @@ class TestBuild:
         if os.sep != '/':
             assert '/' not in argv[1], 'mixed separators leaked into the path'
 
+    def test_container_paths_stay_posix_on_a_windows_host(self):
+        """The command is assembled here and run inside a Linux container.
+
+        Normalising it with the host's separators produced
+        `\\sim_ws\\src\\...\\train_duel.py`, which the container cannot open —
+        so every docker-routed python and shell command silently failed when the
+        host was Windows.
+        """
+        for cid in ('train-duel', 'train-rl', 'bench-map', 'map-finish'):
+            _argv, shown = atlas.build(reg.get(cid), [], dict(self.ENV), 'docker')
+            assert '\\' not in shown, f'{cid}: backslash in a container path'
+            assert atlas.CONTAINER_REPO in shown, f'{cid}: wrong container root'
+
 
 # ── hardware doctor ──────────────────────────────────────────────────────────
 class TestDoctor:

@@ -164,27 +164,40 @@ def choose_context(cmd, envinfo):
 
 
 # ── command construction ─────────────────────────────────────────────────────
-def inner_command(cmd, extra, repo):
-    """The command line as it runs *inside* the chosen context."""
+def inner_command(cmd, extra, repo, posix=False):
+    """The command line as it runs *inside* the chosen context.
+
+    `posix` forces forward-slash paths regardless of the host OS, which the
+    docker context always needs: the command is assembled on this machine but
+    executed inside a Linux container.
+    """
     kind, target = cmd['kind'], cmd['target']
     if kind == 'launch':
         parts = ['ros2', 'launch', 'f1tenth_gym_ros', target]
     elif kind == 'node':
         parts = ['ros2', 'run', 'f1tenth_gym_ros', target]
     elif kind == 'shell':
-        parts = ['bash', _join(repo, target)]
+        parts = ['bash', _join(repo, target, posix)]
     else:                                            # python
         if target.startswith('-m '):                 # e.g. "-m pytest"
             parts = ['python3', '-m', target.split(None, 1)[1]]
         else:
-            parts = ['python3', _join(repo, target)]
+            parts = ['python3', _join(repo, target, posix)]
     return parts + list(extra)
 
 
-def _join(repo, target):
-    """Registry targets use forward slashes; keep the result native."""
-    return os.path.normpath(os.path.join(repo, *target.split('/'))) \
-        if os.sep != '/' else os.path.join(repo, target)
+def _join(repo, target, posix=False):
+    """Join a repo root and a forward-slash registry target.
+
+    Native separators for anything running on this machine; POSIX when the
+    result is destined for the Linux container.  Normalising a container path
+    with os.path.normpath on a Windows host produced
+    `\\sim_ws\\src\\...\\train_duel.py`, which the container cannot open — so
+    the two cases genuinely cannot share one code path.
+    """
+    if posix or os.sep == '/':
+        return repo.rstrip('/') + '/' + target.lstrip('/')
+    return os.path.normpath(os.path.join(repo, *target.split('/')))
 
 
 def ros_prefix(ws):
@@ -203,7 +216,7 @@ def build(cmd, extra, envinfo, ctx):
         return ['bash', '-lc', line], inner
 
     if ctx == 'docker':
-        inner = ' '.join(inner_command(cmd, extra, CONTAINER_REPO))
+        inner = ' '.join(inner_command(cmd, extra, CONTAINER_REPO, posix=True))
         line = (f'source {ROS_SETUP}; source /sim_ws/install/setup.bash 2>/dev/null; '
                 f'cd {CONTAINER_REPO}; ' + inner)
         return (['docker', 'exec', '-it', envinfo['container'], 'bash', '-lc', line],
