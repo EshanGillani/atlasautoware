@@ -47,6 +47,18 @@ RUN git clone https://github.com/f1tenth/f1tenth_gym
 RUN cd f1tenth_gym && \
     pip3 install -e .
 
+# torch, for the learned policies (tools/train_rl.py, tools/train_duel.py).
+# It belongs in the image rather than being pip-installed into a running
+# container, or every rebuild silently loses the ability to train.
+# CPU build deliberately: the deployed actor is ~113k parameters and runs in
+# well under a millisecond on CPU, and the training bottleneck is the gym
+# simulation, which is CPU-bound regardless -- a CUDA image would multiply the
+# size for no useful speedup.  The legacy pip pin above is restored afterwards
+# because the ament_python build below still depends on it.
+RUN pip3 install --upgrade pip && \
+    pip3 install --index-url https://download.pytorch.org/whl/cpu torch && \
+    pip3 install "pip<24.1"
+
 # ros2 gym bridge
 RUN mkdir -p sim_ws/src/f1tenth_gym_ros
 COPY . /sim_ws/src/f1tenth_gym_ros

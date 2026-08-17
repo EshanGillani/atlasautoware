@@ -142,8 +142,18 @@ def choose_context(cmd, envinfo):
             return 'local', 'f110_gym is importable here'
         if envinfo['container']:
             return 'docker', f"f110_gym lives in {envinfo['container']}"
-        return None, ('needs f110_gym — pip install -e it, or start the sim '
-                      'container')
+        # Be specific: f110_gym pins gym==0.19.0 and numpy<=1.22.0, neither of
+        # which has wheels for a recent Python, so "just pip install it" is
+        # actively misleading advice on 3.12+. The container exists precisely
+        # because it carries a Python the legacy pins still resolve against.
+        hint = ''
+        if sys.version_info >= (3, 12):
+            hint = (f' (it pins gym==0.19.0 and numpy<=1.22.0, which have no '
+                    f'wheels for your Python '
+                    f'{sys.version_info.major}.{sys.version_info.minor} — '
+                    f'use the container)')
+        return None, ('needs f110_gym: start the sim container with '
+                      '`docker-compose up -d`' + hint)
     # plain
     missing = [m for m in cmd.get('needs', []) if not can_import(m)]
     if not missing:

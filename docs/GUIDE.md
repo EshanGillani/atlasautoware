@@ -217,7 +217,37 @@ Then put it on the car about 10% under the winning `v_scale`.
 
 ---
 
-## 5. The learned policy
+## 5. Where training runs
+
+Training needs **no ROS and no car** — only `torch` and `f110_gym`. But
+`f110_gym` pins `gym==0.19.0` and `numpy<=1.22.0`, and neither has wheels for a
+recent Python, so on a modern interpreter it will not install no matter how you
+ask. **Train in the sim container**, which carries a Python those legacy pins
+still resolve against:
+
+```bash
+docker-compose up -d          # first run builds the image (~15-30 min)
+```
+
+That is all. `atlas` detects the container and routes training into it
+automatically — the same command works from your laptop:
+
+```bash
+python3 tools/atlas.py run train-duel -- --steps 200000
+python3 tools/atlas.py run train-rl   -- --steps 300000
+```
+
+`atlas env` will show `sim container` as running, and `atlas info train-duel`
+flips from *unavailable* to *docker*. Checkpoints land in `runtime/`, which is
+bind-mounted, so they appear on your host as they are written and survive the
+container being stopped.
+
+Torch is baked into the image (CPU build — the actor is ~113k parameters and the
+training bottleneck is the gym simulation, which is CPU-bound anyway, so a CUDA
+image buys size rather than speed). If you have a Linux box with Python 3.10 you
+can install `f110_gym` natively instead and skip Docker entirely.
+
+## 6. The learned policy
 
 The neural policy never drives the car directly. It outputs a **bounded
 correction** to what the MPC already decided — at most ±0.10 rad of steering and
@@ -250,7 +280,7 @@ See [rl.md](rl.md) for how it works and why it is built this way.
 
 ---
 
-## 6. Competition day
+## 7. Competition day
 
 ```bash
 atlas doctor                                     # every connection
