@@ -43,8 +43,12 @@ from f1tenth_gym_ros.rl.features import ObsSpec            # noqa: E402
 from f1tenth_gym_ros.rl.sac import SAC, ReplayBuffer       # noqa: E402
 
 
-def evaluate(env, agent, episodes=3, use_policy=True):
-    """Deterministic rollouts.  use_policy=False measures the MPC baseline."""
+def evaluate(env, agent, episodes=3, use_policy=True, render=False):
+    """Deterministic rollouts.  use_policy=False measures the MPC baseline.
+
+    Rendering happens HERE and never in the training loop: drawing every
+    training step would cost far more than the learning it lets you watch,
+    and the evaluation rollouts are the ones worth seeing anyway."""
     laps, crashes, rewards, progress = [], 0, [], []
     for k in range(episodes):
         obs = env.reset(start_idx=k * env.n // max(episodes, 1))
@@ -54,6 +58,8 @@ def evaluate(env, agent, episodes=3, use_policy=True):
                       else env.mpc_action())
             obs, r, done, info = env.step(action)
             total += r
+            if render:
+                env.render()
         rewards.append(total)
         progress.append(info['progress'])
         if info['crashed'] or info['off_track']:
@@ -94,6 +100,10 @@ def main():
     ap.add_argument('--beams', type=int, default=108)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--device', default=None, help='cuda | cpu (default: auto)')
+    ap.add_argument('--render', action='store_true',
+                    help='draw the evaluation rollouts; in the sim container '
+                         'this needs the noVNC display at '
+                         'http://localhost:8080/vnc.html')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -157,7 +167,7 @@ def main():
                 agent.update(buf.sample(args.batch, rng))
 
         if step % args.eval_every == 0:
-            res = evaluate(env, agent, args.eval_episodes)
+            res = evaluate(env, agent, args.eval_episodes, render=args.render)
             lap = res['lap_time']
             rate = step / max(time.time() - t0, 1e-6)
             print(f"step {step:>8,}  reward {res['reward']:>8.1f}  "

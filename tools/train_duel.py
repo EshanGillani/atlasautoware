@@ -39,7 +39,8 @@ from f1tenth_gym_ros.rl.duel_env import DuelEnv               # noqa: E402
 from f1tenth_gym_ros.rl.sac import SAC, ReplayBuffer          # noqa: E402
 
 
-def evaluate(env, agent, styles=(0.0, 0.5, 1.0), episodes=4, use_policy=True):
+def evaluate(env, agent, styles=(0.0, 0.5, 1.0), episodes=4, use_policy=True,
+             render=False):
     """Per-style rollouts — the columns that show whether the knob works."""
     out = {}
     for style in styles:
@@ -53,6 +54,8 @@ def evaluate(env, agent, styles=(0.0, 0.5, 1.0), episodes=4, use_policy=True):
                           else env.rule_based_action())
                 obs, r, done, info = env.step(action)
                 total += r
+                if render:
+                    env.render()
             rewards.append(total)
             progress.append(info['progress'])
             passes += info['passes']
@@ -93,6 +96,8 @@ def main():
     ap.add_argument('--v-scale', type=float, default=1.0)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--device', default=None)
+    ap.add_argument('--render', action='store_true',
+                    help='draw the evaluation rollouts (noVNC display in the container)')
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -144,7 +149,8 @@ def main():
             agent.update(buf.sample(args.batch, rng))
 
         if step % args.eval_every == 0:
-            res = evaluate(env, agent, episodes=args.eval_episodes)
+            res = evaluate(env, agent, episodes=args.eval_episodes,
+                           render=args.render)
             mean_r = float(np.mean([r['reward'] for r in res.values()]))
             print(f'step {step:>8,}  mean reward {mean_r:>8.1f}  '
                   f'({step / max(time.time() - t0, 1e-6):.0f} steps/s)')

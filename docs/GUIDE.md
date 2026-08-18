@@ -190,9 +190,17 @@ friction each setup still completes at:
 ```
 survives down to       lap    cost
         mu 0.95     35.27s   +0.00s
-        mu 0.80     39.89s   +4.62s
-        mu 0.75     40.75s   +5.48s
+        mu 0.90     35.69s   +0.41s
+        mu 0.80     36.54s   +1.27s
 ```
+
+**Those particular numbers came from a search with no actuation delay, and they
+are not what the car does.** They are left here only to show the shape of the
+output. Re-measured against this car's real 100 ms, that "35.27 s" setup is
+41.9 s and 0% reliable at mu 0.90; a search that models the delay produces
+41.60 s and 100% from mu 1.05 down to 0.80. `bayes_tune` now takes the delay
+from `hardware.yaml` automatically, so a fresh run gives you honest figures —
+but never compare a number from before that change with one from after.
 
 Pick the lowest grip you actually want to survive, then take the fastest row at
 or below it. Make that call with the track in front of you: a clean carpet on
@@ -246,6 +254,42 @@ Torch is baked into the image (CPU build — the actor is ~113k parameters and t
 training bottleneck is the gym simulation, which is CPU-bound anyway, so a CUDA
 image buys size rather than speed). If you have a Linux box with Python 3.10 you
 can install `f110_gym` natively instead and skip Docker entirely.
+
+### Watching it drive
+
+Training is headless by default, and should stay that way — drawing every
+training step costs far more than the learning it lets you watch. What you
+actually want to see is the *evaluation* rollouts, and `--render` does exactly
+that:
+
+```bash
+python tools/atlas.py run train-duel -- --steps 200000 --render
+python tools/atlas.py run eval-rl    -- --render        # watch a trained policy
+python tools/atlas.py run validate   -- --render        # watch the MPC baseline
+```
+
+Inside the container the renderer needs an X display, and `docker-compose`
+already brings one up: the `novnc` service, with the sim container pointed at it
+via `DISPLAY=novnc:0.0`. So there is nothing to install —
+
+```bash
+docker-compose up -d          # starts BOTH sim and novnc
+```
+
+then open **http://localhost:8080/vnc.html** and click *Connect*. The f110_gym
+window appears there as soon as an evaluation rollout starts. The same display
+carries RViz if you launch the ROS sim.
+
+Rendering is best-effort by design: if no display is reachable the run prints
+one line explaining why and carries on headless. A training run that dies
+because nobody was watching would be a bad trade.
+
+**For judging progress, the numbers beat the picture.** Watching a lap tells you
+whether the car looks sane; the per-evaluation table tells you whether it is
+improving, and `runtime/rl/train_log.jsonl` (or `runtime/duel/`) has every
+evaluation as JSON. For the duel policy the columns that matter are `passes` and
+`contacts` per style — if aggressive and conservative do not separate there, the
+style conditioning is not working however good the picture looks.
 
 ## 6. The learned policy
 

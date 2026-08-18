@@ -227,7 +227,9 @@ COMMANDS = [
                'racelines/comp_raceline.csv'),
               ('--map', 'map to train on (no extension)', 'maps/comp_track'),
               ('--warm-start', 'imitate the MPC for N steps first', '20000'),
-              ('--out', 'checkpoint directory', 'runtime/rl')],
+              ('--out', 'checkpoint directory', 'runtime/rl'),
+              ('--render', 'watch the evaluation laps (noVNC on :8080)',
+               None)],
         long='Trains a LiDAR-driven policy that outputs a CORRECTION to the MPC '
              'command rather than replacing it, so an untrained policy still '
              'drives (as the MPC) and a trained one can only bend the line '
@@ -243,7 +245,9 @@ COMMANDS = [
               ('--authority', 'how much the policy may bend the decision (0..1)',
                '1.0'),
               ('--style', 'fix the style instead of sampling it', None),
-              ('--out', 'checkpoint directory', 'runtime/duel')],
+              ('--out', 'checkpoint directory', 'runtime/duel'),
+              ('--render', 'watch the evaluation laps (noVNC on :8080)',
+               None)],
         long='Learns a bounded correction to the race brain\'s DECISION -- the '
              'lateral offset and speed factor it already emits -- rather than to '
              'raw control. The mode (CRUISE/ATTACK/DEFEND/EVADE) stays '
@@ -258,7 +262,8 @@ COMMANDS = [
         env='gym', where='host', needs=['numpy', 'torch'],
         title='Evaluate a trained policy against the MPC baseline',
         args=[('--checkpoint', 'policy checkpoint', 'runtime/rl/policy.pt'),
-              ('--episodes', 'evaluation episodes', '10')],
+              ('--episodes', 'evaluation episodes', '10'),
+              ('--render', 'watch the laps (noVNC on :8080)', None)],
         long='Head-to-head lap times and crash rate, policy vs pure MPC, on the '
              'real gym dynamics. Never field a policy that loses this.',
     ),

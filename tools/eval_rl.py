@@ -34,7 +34,7 @@ from f1tenth_gym_ros.rl.env import RaceEnv                 # noqa: E402
 from f1tenth_gym_ros.rl.features import ObsSpec            # noqa: E402
 
 
-def rollout(env, act_fn, starts):
+def rollout(env, act_fn, starts, render=False):
     laps, crashes, progress = [], 0, []
     for s in starts:
         obs = env.reset(start_idx=s)
@@ -42,6 +42,8 @@ def rollout(env, act_fn, starts):
         info = {}
         while not done:
             obs, _r, done, info = env.step(act_fn(obs))
+            if render:
+                env.render()
         progress.append(info['progress'])
         if info['crashed'] or info['off_track']:
             crashes += 1
@@ -74,6 +76,8 @@ def main():
                     help='evaluate at 0.25 / 0.5 / 0.75 / 1.0 as well')
     ap.add_argument('--v-scale', type=float, default=1.0)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--render', action='store_true',
+                    help='watch the laps (noVNC display in the container)')
     args = ap.parse_args()
 
     if not os.path.exists(args.checkpoint):
@@ -100,14 +104,16 @@ def main():
 
     print(f"  {'':<22} {'lap time':>16}   completion    crashes")
     print('  ' + '-' * 70)
-    base = rollout(env, lambda _o: env.mpc_action(), starts)
+    base = rollout(env, lambda _o: env.mpc_action(), starts,
+                   render=args.render)
     base_lap = summarize('MPC baseline', base, args.episodes)
 
     levels = [0.25, 0.5, 0.75, 1.0] if args.authority_sweep else [args.authority]
     results = {}
     for a in levels:
         env.residual.authority = float(a)
-        r = rollout(env, lambda o: agent.act(o, deterministic=True), starts)
+        r = rollout(env, lambda o: agent.act(o, deterministic=True), starts,
+                    render=args.render)
         results[a] = summarize(f'policy @ authority {a:.2f}', r, args.episodes)
 
     print()

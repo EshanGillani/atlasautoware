@@ -356,6 +356,24 @@ class DuelEnv:
         """
         return np.zeros(2, dtype=np.float32)
 
+    def render(self, mode='human'):
+        """Draw the current frame, if a display is reachable.
+
+        Deliberately best-effort: f110_gym's renderer is pyglet, which needs an
+        X display, and a training run must never die because nobody was
+        watching.  The first failure disables rendering for the rest of the
+        run rather than raising once per step.
+        """
+        if getattr(self, '_render_broken', False):
+            return
+        try:
+            self._env.render(mode=mode)
+        except Exception as exc:
+            self._render_broken = True
+            print(f'[render] disabled ({exc}). Inside the sim container this '
+                  f'needs the noVNC display: docker-compose brings one up, then '
+                  f'open http://localhost:8080/vnc.html', flush=True)
+
     def close(self):
         try:
             self._env.close()
