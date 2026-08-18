@@ -34,7 +34,16 @@ RUN apt-get update --fix-missing && \
                        tmux \
                        ros-humble-rviz2
 RUN apt-get -y dist-upgrade
-RUN pip3 install transforms3d
+# Runtime deps of the stack itself.  osqp is what the MPC solves with, and
+# every controller path -- raceline_mpc on the car, both RL environments,
+# the tuners -- needs it; without it KinematicMPC reports available=False
+# and the RL envs refuse to start.  Held to the 0.6.x series the README and
+# this code target: osqp 1.x renamed solver settings (polish -> polishing) and
+# warns on every solve.  A range rather than == so pip takes whichever 0.6.x
+# has a cp310 wheel instead of falling back to a source build that needs
+# cmake.  Installed before the legacy pip/setuptools pin below, which then
+# re-pins the build frontend for the f1tenth_gym install.
+RUN pip3 install transforms3d "osqp>=0.6.2,<1.0"
 
 # f1tenth gym
 # Upstream f1tenth_gym pins legacy gym (==0.19.0) and numpy<=1.22, whose
