@@ -219,8 +219,14 @@ def build(cmd, extra, envinfo, ctx):
         inner = ' '.join(inner_command(cmd, extra, CONTAINER_REPO, posix=True))
         line = (f'source {ROS_SETUP}; source /sim_ws/install/setup.bash 2>/dev/null; '
                 f'cd {CONTAINER_REPO}; ' + inner)
-        return (['docker', 'exec', '-it', envinfo['container'], 'bash', '-lc', line],
-                inner)
+        # Forward a DISPLAY so the f110_gym renderer has somewhere to draw.
+        # docker-compose sets DISPLAY=novnc:0.0 on the sim service, but relying
+        # on that means rendering silently does nothing for any container
+        # started another way -- and "nothing appears" is a miserable thing to
+        # debug. ATLAS_DISPLAY overrides for a different X server.
+        display = os.environ.get('ATLAS_DISPLAY', 'novnc:0.0')
+        return (['docker', 'exec', '-it', '-e', f'DISPLAY={display}',
+                 envinfo['container'], 'bash', '-lc', line], inner)
 
     # local — no shell, no ROS; use THIS interpreter so venvs are respected
     parts = inner_command(cmd, extra, REPO)

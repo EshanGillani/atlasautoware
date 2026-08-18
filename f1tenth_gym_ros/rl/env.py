@@ -76,6 +76,34 @@ def _unpack_reset(res):
     return res[0] if isinstance(res, tuple) else res
 
 
+# ── renderer camera ──────────────────────────────────────────────────────────
+# f110_gym draws cars at 50x world coordinates and initialises its camera around
+# the ORIGIN, with no follow behaviour -- only manual mouse pan and scroll. On a
+# map whose coordinates are tens of metres from zero (comp_track's start is near
+# (49, 62) m, i.e. (2450, 3100) renderer units) the cars sit far outside the
+# default view, so you get a window showing an empty corner of the track and
+# nothing else. This registers the documented render callback, which runs after
+# update_obs and before on_draw, to keep the ego centred.
+RENDER_HALF_WIDTH = 700.0          # renderer units (~14 m at the 50x scale)
+
+
+def follow_ego(renderer):
+    """Centre the camera on the ego car. Registered via add_render_callback."""
+    poses = getattr(renderer, 'poses', None)
+    if poses is None or not len(poses):
+        return
+    idx = int(getattr(renderer, 'ego_idx', 0) or 0)
+    idx = min(idx, len(poses) - 1)
+    cx, cy = float(poses[idx][0]) * 50.0, float(poses[idx][1]) * 50.0
+    half_w = RENDER_HALF_WIDTH
+    # Preserve the window's aspect ratio so the track is not stretched.
+    width = float(getattr(renderer, 'width', 1000) or 1000)
+    height = float(getattr(renderer, 'height', 800) or 800)
+    half_h = half_w * (height / max(width, 1.0))
+    renderer.left, renderer.right = cx - half_w, cx + half_w
+    renderer.bottom, renderer.top = cy - half_h, cy + half_h
+
+
 class RaceEnv:
     """Racing environment over the real gym dynamics.
 
@@ -292,6 +320,14 @@ class RaceEnv:
         if getattr(self, '_render_broken', False):
             return
         try:
+            if not getattr(self, '_camera_hooked', False):
+                # Register once. Without it the camera stays at the origin and
+                # the cars are off-screen on any map not centred on zero.
+                try:
+                    self._env.unwrapped.add_render_callback(follow_ego)
+                except Exception:
+                    self._env.add_render_callback(follow_ego)
+                self._camera_hooked = True
             self._env.render(mode=mode)
         except Exception as exc:
             self._render_broken = True

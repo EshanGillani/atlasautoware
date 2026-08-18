@@ -118,7 +118,17 @@ def main():
           f'+/-{spec.d_speed:.2f} speed factor, authority {args.authority:.2f}')
     print(f'style       {"fixed " + str(args.style) if args.style is not None else "sampled per episode"}\n')
 
-    base = evaluate(env, agent, episodes=args.eval_episodes, use_policy=False)
+    if args.render:
+        # Render the baseline too. It runs before any training, so it is the
+        # first chance to confirm the display works -- and if the first
+        # frames only appeared at the initial evaluation thousands of steps
+        # in, --render would look broken for minutes.
+        print('rendering: open http://localhost:8080/vnc.html'
+              ' — frames appear now, then at every evaluation'
+              f' (every {args.eval_every:,} steps).')
+        print()
+    base = evaluate(env, agent, episodes=args.eval_episodes, use_policy=False,
+                    render=args.render)
     show('rule-based baseline', base)
     print()
 

@@ -123,7 +123,13 @@ def main():
     print(f'raceline    {os.path.basename(args.raceline)} ({env.n} pts, '
           f'{env.track_len:.1f} m)\n')
 
-    base = evaluate(env, agent, args.eval_episodes, use_policy=False)
+    if args.render:
+        print('rendering: open http://localhost:8080/vnc.html'
+              ' — frames appear now, then at every evaluation'
+              f' (every {args.eval_every:,} steps).')
+        print()
+    base = evaluate(env, agent, args.eval_episodes, use_policy=False,
+                    render=args.render)
     print(f"MPC baseline: lap "
           f"{base['lap_time'] if base['lap_time'] else float('nan'):.2f}s  "
           f"completed {base['completed']}/{args.eval_episodes}  "
