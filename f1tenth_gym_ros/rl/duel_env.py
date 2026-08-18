@@ -43,6 +43,7 @@ import numpy as np
 
 from .duel import (DuelSpec, Rival, StrategyResidual, build_duel_observation,
                    style_reward_weights)
+from .features import pursuit_steer
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
@@ -92,6 +93,46 @@ def follow_ego(renderer):
     half_h = half_w * (height / max(width, 1.0))
     renderer.left, renderer.right = cx - half_w, cx + half_w
     renderer.bottom, renderer.top = cy - half_h, cy + half_h
+
+
+def load_corridor(map_yaml, rx, ry, car_half=0.15):
+    """Per-raceline-point usable half-width, measured from the occupancy map.
+
+    Returns None if the map cannot be read, in which case the caller falls back
+    to a constant.
+
+    This exists because assuming a constant corridor is badly wrong on a real
+    track.  comp_track's raceline has a median clearance of 0.67 m to the wall
+    but a minimum of 0.21 m, so the usable half-width -- what is left after the
+    car's own 0.15 m half-width -- ranges from 0.99 m down to 0.06 m.  A
+    decision layer told it has 1.0 m everywhere will happily park the car 0.55 m
+    off-line to make a pass, which is inside the wall on 54% of this lap.
+    """
+    try:
+        import yaml
+        from PIL import Image
+        from scipy import ndimage
+    except Exception:
+        return None
+    try:
+        with open(map_yaml) as f:
+            meta = yaml.safe_load(f)
+        img_path = meta['image']
+        if not os.path.isabs(img_path):
+            img_path = os.path.join(os.path.dirname(map_yaml), img_path)
+        res = float(meta['resolution'])
+        origin = meta['origin']
+        img = np.array(Image.open(img_path).convert('L'))
+        H, W = img.shape
+        p = img / 255.0 if int(meta.get('negate', 0)) else (255 - img) / 255.0
+        occ = p > float(meta.get('occupied_thresh', 0.65))
+        edt = ndimage.distance_transform_edt(~occ) * res
+        col = (np.asarray(rx, float) - origin[0]) / res
+        row = (H - 1) - (np.asarray(ry, float) - origin[1]) / res
+        clear = ndimage.map_coordinates(edt, [row, col], order=1)
+        return np.maximum(clear - float(car_half), 0.02)
+    except Exception:
+        return None
 
 
 class ScriptedRival:
@@ -145,7 +186,8 @@ class DuelEnv:
     def __init__(self, map_path, raceline, spec=None, map_ext='.png',
                  max_steps=6000, laps=1, v_scale=1.0, authority=1.0,
                  style=None, seed=0, contact_bubble=0.9, max_deviation=1.4,
-                 max_steer=0.36, rival_pace=(0.80, 0.95)):
+                 max_steer=0.36, rival_pace=(0.80, 0.95), launch_speed=1.5,
+                 map_yaml=None, car_half=0.15, off_track_margin=0.75):
         self.spec = spec or DuelSpec()
         self.rx, self.ry, self.rh, self.rc, self.rspeed = _load_raceline(raceline)
         self.rspeed = self.rspeed * float(v_scale)
@@ -164,13 +206,37 @@ class DuelEnv:
         self.max_deviation = float(max_deviation)
         self.max_steer = float(max_steer)
         self.rival_pace = tuple(rival_pace)
+        self.launch_speed = float(launch_speed)
+        self.off_track_margin = float(off_track_margin)
         self.fixed_style = style
         self.rng = np.random.default_rng(seed)
+
+        # Usable corridor around the raceline, MEASURED from the occupancy
+        # map where possible.  A constant is badly wrong on a real track:
+        # comp_track's usable half-width runs from 0.99 m down to 0.06 m, so a
+        # decision layer told it has 1.0 m everywhere parks the car 0.55 m
+        # off-line to pass -- inside the wall on 54% of that lap.
+        if map_yaml is None:
+            guess = str(map_path) + '.yaml'
+            map_yaml = guess if os.path.exists(guess) else None
+        measured = (load_corridor(map_yaml, self.rx, self.ry, car_half)
+                    if map_yaml else None)
+        self.corridor_measured = measured is not None
+        self.half_width = (measured if self.corridor_measured else
+                           np.full(self.n, float(self.spec.track_half)))
+
+        # Where ATTACK parks the car must fit the NARROW part of the track,
+        # not the average.  Only derive it when the corridor is real: derived
+        # from the fallback constant it would be 0.8 x a made-up width, which
+        # is worse than the strategist's own default.
+        side = (float(np.percentile(self.half_width, 20)) * 0.8
+                if self.corridor_measured else 0.55)
 
         from race_brain import RaceStrategist
         self.brain = RaceStrategist(attack_range=self.spec.attack_range,
                                     defend_range=self.spec.defend_range,
-                                    track_half=self.spec.track_half)
+                                    side_clearance=side,
+                                    track_half=float(np.median(self.half_width)))
         self.residual = StrategyResidual(self.spec, authority=authority)
         self.mpc = self._make_mpc()
         self.obs_dim = self.spec.dim
@@ -291,8 +357,9 @@ class DuelEnv:
         closing = ev - rv
         rival = Rival(gap, riv_lat, closing)
 
-        room_left = max(0.0, self.spec.track_half - ego_lat)
-        room_right = max(0.0, self.spec.track_half + ego_lat)
+        half = float(self.half_width[self.j])
+        room_left = max(0.0, half - ego_lat)
+        room_right = max(0.0, half + ego_lat)
         heading_err = math.atan2(math.sin(eyaw - self.rh[self.j]),
                                  math.cos(eyaw - self.rh[self.j]))
 
@@ -306,14 +373,30 @@ class DuelEnv:
             decision.speed_factor, self.style)
         return obs, decision, (ego_lat, room_left, room_right, gap, ev)
 
+    def _baseline(self, x, y, yaw, v, j, offset):
+        """The MPC tracking the offset line, or a pure-pursuit launch from rest.
+
+        f110_gym resets with zero velocity and the MPC cannot steer a stationary
+        car (yaw_dot = v*tan(delta)/L is zero at v = 0), so without this the
+        rule-based baseline left the track within a few metres of every spawn --
+        4 contacts in 4 episodes, ~10 m of a 243 m lap -- and the policy was
+        being trained against a baseline that could not drive.
+        """
+        if v < self.launch_speed:
+            steer = pursuit_steer(x, y, yaw, self.rx, self.ry, j, 1.0,
+                                  self.mpc.L, self.max_steer,
+                                  offset=offset, nx=self.nx, ny=self.ny)
+            return steer, self.launch_speed + 1.0
+        out = self.mpc.solve((x, y, yaw, v), j, offset=offset)
+        return out if out is not None else (0.0, float(self.rspeed[j]))
+
     def step(self, action):
         obs, decision, (ego_lat, room_l, room_r, gap, ev) = self._observe()
         offset, speed_factor = self.residual.apply(
             action, decision.offset, decision.speed_factor, room_l, room_r)
 
         ex, ey, eyaw, _ = self._pose(0)
-        out = self.mpc.solve((ex, ey, eyaw, ev), self.j, offset=offset)
-        steer, v_cmd = out if out is not None else (0.0, float(self.rspeed[self.j]))
+        steer, v_cmd = self._baseline(ex, ey, eyaw, ev, self.j, offset)
         v_cmd *= speed_factor
 
         rx_, ry_, ryaw, rv = self._pose(1)
@@ -342,7 +425,16 @@ class DuelEnv:
         self._prev_gap = new_gap
 
         contact = _scalar(self._obs['collisions'], 0) > 0.5
-        off_track = abs(new_lat) > self.max_deviation
+        # f110_gym's own collision detection is the real arbiter of hitting a
+        # wall, and `contact` above carries it.  This is only a 'lost the
+        # plot' bound for a car that has wandered somewhere the corridor
+        # cannot explain.  It deliberately is NOT the measured corridor: the
+        # MPC's own cross-track error runs 0.13-0.47 m on this line while the
+        # tightest usable half-width is 0.06 m, so a strict corridor test
+        # would end almost every episode on normal tracking error.
+        limit = min(self.max_deviation,
+                    float(self.half_width[j_new]) + self.off_track_margin)
+        off_track = abs(new_lat) > limit
         finished = self.progress >= self.laps * self.track_len
         timeout = self.steps >= self.max_steps
 

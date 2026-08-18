@@ -49,7 +49,7 @@ import os
 import numpy as np
 
 from .features import (ObsSpec, ResidualAction, arclength, build_observation,
-                       signed_cross_track, wrap_angle)
+                       pursuit_steer, signed_cross_track, wrap_angle)
 
 
 def _load_raceline(path):
@@ -121,7 +121,7 @@ class RaceEnv:
                  deviation_weight=0.35, effort_weight=0.02, progress_weight=1.0,
                  max_deviation=1.2, d_steer=0.10, d_speed=1.5, authority=1.0,
                  v_scale=1.0, random_start=True, map_ext='.png', seed=0,
-                 control_dt=0.01):
+                 control_dt=0.01, launch_speed=1.5):
         self.spec = spec or ObsSpec()
         self.rx, self.ry, self.rh, self.rc, self.rspeed = _load_raceline(raceline)
         self.rspeed = self.rspeed * float(v_scale)
@@ -139,6 +139,7 @@ class RaceEnv:
         self.max_deviation = float(max_deviation)
         self.random_start = bool(random_start)
         self.control_dt = float(control_dt)
+        self.launch_speed = float(launch_speed)
         self.rng = np.random.default_rng(seed)
 
         self.residual = ResidualAction(
@@ -227,8 +228,7 @@ class RaceEnv:
         """-> (observation, baseline (steer, speed), pose)."""
         x, y, yaw, v, yaw_rate = self._pose()
         self.j = int(np.argmin((self.rx - x) ** 2 + (self.ry - y) ** 2))
-        out = self.mpc.solve((x, y, yaw, v), self.j)
-        base = out if out is not None else (0.0, float(self.rspeed[self.j]))
+        base = self._baseline(x, y, yaw, v, self.j)
         scan = self._obs.get('scans', [[]])
         scan = scan[0] if len(scan) and np.ndim(scan[0]) else scan
         obs = build_observation(
@@ -236,6 +236,21 @@ class RaceEnv:
             self.rx, self.ry, self.rh, self.rc, self.rspeed, self.s_cum, self.j,
             base_steer=base[0], base_speed=base[1])
         return obs, base, (x, y, yaw, v)
+
+    def _baseline(self, x, y, yaw, v, j):
+        """The MPC's command, or a pure-pursuit launch if the car is barely moving.
+
+        f110_gym resets with zero velocity, so without the launch branch every
+        episode began with the MPC unable to steer and the car leaving the track
+        within a few metres -- which made the baseline, and therefore everything
+        the policy learned against it, meaningless.
+        """
+        if v < self.launch_speed:
+            steer = pursuit_steer(x, y, yaw, self.rx, self.ry, j, 1.0,
+                                  self.mpc.L, self.mpc.max_steer)
+            return steer, self.launch_speed + 1.0
+        out = self.mpc.solve((x, y, yaw, v), j)
+        return out if out is not None else (0.0, float(self.rspeed[j]))
 
     def step(self, action):
         """action in [-1, 1]^2 — a correction of the MPC, not a raw command."""

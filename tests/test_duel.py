@@ -257,7 +257,7 @@ class StubTwoCarGym:
 
     def reset(self, poses):
         self.s = [[float(poses[i][0]), float(poses[i][1]),
-                   float(poses[i][2]), 3.0] for i in range(2)]
+                   float(poses[i][2]), 0.0] for i in range(2)]
         return self._obs(), {}
 
     def step(self, action):
@@ -292,7 +292,13 @@ def duel_env():
         pytest.skip('osqp not installed — the MPC baseline cannot solve')
     from f1tenth_gym_ros.rl import duel_env as de
     de.DuelEnv._make_gym = staticmethod(lambda m, e: StubTwoCarGym())
-    return de.DuelEnv('stub', RACELINE, max_steps=400, seed=0)
+    # Pass the real map so the corridor is MEASURED. A fixture that
+    # skips it exercises the fallback constant instead of the actual
+    # track, which is how the too-wide-corridor bug stayed hidden.
+    return de.DuelEnv(os.path.join(REPO, 'maps', 'comp_track'),
+                      RACELINE, max_steps=400, seed=0,
+                      map_yaml=os.path.join(REPO, 'maps',
+                                            'comp_track.yaml'))
 
 
 class TestDuelEnv:
@@ -340,3 +346,77 @@ class TestDuelEnv:
 
 if __name__ == '__main__':
     sys.exit(pytest.main([__file__, '-q']))
+
+
+# ── launching from rest, and the measured corridor ───────────────────────────
+class TestLaunchAndCorridor:
+    """The two bugs that made the rule-based baseline undriveable.
+
+    Both were invisible for the same reason: the stub gym used to reset at
+    3 m/s and the corridor was assumed rather than measured, so the tests
+    agreed with the code instead of with the track.
+    """
+
+    def test_stub_resets_from_rest_like_the_real_gym(self):
+        """If this regresses, the launch bug becomes invisible again."""
+        g = StubTwoCarGym()
+        g.reset(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+        assert g.s[0][3] == 0.0 and g.s[1][3] == 0.0
+
+    def test_pursuit_steer_works_at_zero_speed(self):
+        """The MPC cannot: yaw_dot = v*tan(delta)/L is zero at v = 0."""
+        from f1tenth_gym_ros.rl.features import pursuit_steer
+        rx = np.linspace(0.0, 10.0, 60)
+        ry = 0.3 * rx                      # a path heading up and to the right
+        steer = pursuit_steer(0.0, 0.0, 0.0, rx, ry, 0, 1.0, 0.33, 0.36)
+        assert steer > 0.01, 'should steer left toward a leftward path'
+        assert abs(steer) <= 0.36 + 1e-9
+
+    def test_pursuit_steer_honours_a_lateral_offset(self):
+        from f1tenth_gym_ros.rl.features import pursuit_steer
+        rx = np.linspace(0.0, 10.0, 60)
+        ry = np.zeros(60)
+        nx, ny = np.zeros(60), np.ones(60)          # left normal is +y
+        straight = pursuit_steer(0.0, 0.0, 0.0, rx, ry, 0, 1.0, 0.33, 0.36)
+        offset = pursuit_steer(0.0, 0.0, 0.0, rx, ry, 0, 1.0, 0.33, 0.36,
+                               offset=0.5, nx=nx, ny=ny)
+        assert offset > straight, 'a left offset should steer further left'
+
+    def test_baseline_launches_and_completes_a_lap(self, duel_env):
+        """Without the launch branch this stopped after ~12 m of a 243 m lap."""
+        duel_env.max_steps = 12000
+        duel_env.reset(style=0.5, start_idx=0, rival_gap=4.0)
+        info = {}
+        for _ in range(12000):
+            _o, _r, done, info = duel_env.step(duel_env.rule_based_action())
+            if done:
+                break
+        assert info['progress'] > 100.0, \
+            f'baseline only reached {info["progress"]:.1f} m — is launch broken?'
+
+    def test_corridor_is_measured_from_the_map_when_available(self):
+        from f1tenth_gym_ros.rl import duel_env as de
+        de.DuelEnv._make_gym = staticmethod(lambda m, e: StubTwoCarGym())
+        env = de.DuelEnv(os.path.join(REPO, 'maps', 'comp_track'), RACELINE,
+                         map_yaml=os.path.join(REPO, 'maps', 'comp_track.yaml'))
+        assert env.corridor_measured
+        assert len(env.half_width) == env.n
+        # comp_track really is this tight; a constant 1.0 m was fiction
+        assert env.half_width.min() < 0.2
+        assert float(np.median(env.half_width)) < 0.8
+
+    def test_side_clearance_fits_the_narrow_part_of_the_track(self):
+        """0.55 m off-line is inside the wall on 54% of this lap."""
+        from f1tenth_gym_ros.rl import duel_env as de
+        de.DuelEnv._make_gym = staticmethod(lambda m, e: StubTwoCarGym())
+        env = de.DuelEnv(os.path.join(REPO, 'maps', 'comp_track'), RACELINE,
+                         map_yaml=os.path.join(REPO, 'maps', 'comp_track.yaml'))
+        assert env.brain.side_clearance < 0.35
+        assert env.brain.side_clearance <= float(np.percentile(env.half_width, 20))
+
+    def test_falls_back_to_a_constant_without_a_map(self):
+        from f1tenth_gym_ros.rl import duel_env as de
+        de.DuelEnv._make_gym = staticmethod(lambda m, e: StubTwoCarGym())
+        env = de.DuelEnv('nonexistent-map', RACELINE, map_yaml='/no/such.yaml')
+        assert not env.corridor_measured
+        assert np.allclose(env.half_width, env.spec.track_half)

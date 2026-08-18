@@ -337,7 +337,10 @@ class StubGym:
 
     def reset(self, poses):
         self.x, self.y, self.yaw = (float(v) for v in poses[0])
-        self.v = 3.0
+        # From REST, as f110_gym actually resets. Starting the stub at
+        # 3 m/s hid a real bug: the MPC cannot steer a stationary car, so
+        # every episode used to leave the track within a few metres.
+        self.v = 0.0
         return self._obs(), {}
 
     def step(self, action):

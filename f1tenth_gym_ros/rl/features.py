@@ -116,6 +116,42 @@ def downsample_scan(ranges, n_beams, max_range):
     return (out / max_range).astype(np.float32)
 
 
+def pursuit_steer(x, y, yaw, rx, ry, nearest, look, wheelbase, max_steer,
+                  offset=0.0, nx=None, ny=None):
+    """Geometric pure-pursuit steering, valid at ANY speed including rest.
+
+    The MPC cannot launch a stationary car.  Its model turns the car through
+    yaw_dot = v * tan(delta) / L, so at v = 0 the steering has no effect on the
+    predicted trajectory, the QP has no reason to steer, and the car pulls away
+    dead straight -- off the track within a few metres on anything but a
+    straight.  tools/gym_validate.py hit this and solved it the same way: use
+    geometry to get rolling, hand over to the MPC once there is speed for it to
+    work with.
+
+    `offset` shifts the pursued point along the left normal, so a strategic
+    line (the race brain's lateral offset) is still followed while launching.
+    """
+    n = len(rx)
+    tj = nearest
+    for step in range(1, n):
+        j = (nearest + step) % n
+        if math.hypot(rx[j] - x, ry[j] - y) >= look:
+            tj = j
+            break
+    tx, ty = float(rx[tj]), float(ry[tj])
+    if offset and nx is not None and ny is not None:
+        tx += float(offset) * float(nx[tj])
+        ty += float(offset) * float(ny[tj])
+    dx, dy = tx - x, ty - y
+    lx = dx * math.cos(yaw) + dy * math.sin(yaw)
+    ly = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    ld2 = lx * lx + ly * ly
+    if ld2 < 1e-6:
+        return 0.0
+    return float(np.clip(math.atan(wheelbase * 2.0 * ly / ld2),
+                         -max_steer, max_steer))
+
+
 # ── raceline frame ───────────────────────────────────────────────────────────
 def signed_cross_track(px, py, rx, ry, j):
     """Signed perpendicular offset from the line at index j.
