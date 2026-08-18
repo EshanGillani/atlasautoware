@@ -47,18 +47,6 @@ RUN git clone https://github.com/f1tenth/f1tenth_gym
 RUN cd f1tenth_gym && \
     pip3 install -e .
 
-# torch, for the learned policies (tools/train_rl.py, tools/train_duel.py).
-# It belongs in the image rather than being pip-installed into a running
-# container, or every rebuild silently loses the ability to train.
-# CPU build deliberately: the deployed actor is ~113k parameters and runs in
-# well under a millisecond on CPU, and the training bottleneck is the gym
-# simulation, which is CPU-bound regardless -- a CUDA image would multiply the
-# size for no useful speedup.  The legacy pip pin above is restored afterwards
-# because the ament_python build below still depends on it.
-RUN pip3 install --upgrade pip && \
-    pip3 install --index-url https://download.pytorch.org/whl/cpu torch && \
-    pip3 install "pip<24.1"
-
 # ros2 gym bridge
 RUN mkdir -p sim_ws/src/f1tenth_gym_ros
 COPY . /sim_ws/src/f1tenth_gym_ros
@@ -67,6 +55,26 @@ RUN source /opt/ros/humble/setup.bash && \
     apt-get update --fix-missing && \
     rosdep install -i --from-path src --rosdistro humble -y && \
     colcon build
+
+# torch, for the learned policies (tools/train_rl.py, tools/train_duel.py).
+# It belongs in the image rather than being pip-installed into a running
+# container, or every rebuild silently loses the ability to train.
+#
+# This MUST come after colcon build.  torch pulls in a modern setuptools,
+# which calls packaging.canonicalize_version(strip_trailing_zero=...) -- a
+# keyword the older `packaging` in this image does not accept -- and that
+# combination makes colcon build fail with:
+#     TypeError: canonicalize_version() got an unexpected keyword argument
+# Nothing is built after this point, so the newer setuptools is harmless,
+# and `packaging` is upgraded alongside it so a LATER in-container
+# `colcon build` still works (the repo is bind-mounted and does get rebuilt).
+#
+# CPU build deliberately: the deployed actor is ~113k parameters and runs in
+# well under a millisecond on CPU, and the training bottleneck is the gym
+# simulation, which is CPU-bound regardless -- a CUDA image would multiply
+# the size for no useful speedup.
+RUN pip3 install --upgrade pip packaging && \
+    pip3 install --index-url https://download.pytorch.org/whl/cpu torch
 
 WORKDIR '/sim_ws'
 ENTRYPOINT ["/bin/bash"]
