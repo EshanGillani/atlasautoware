@@ -227,6 +227,7 @@ class Handler(BaseHTTPRequestHandler):
             '/api/raceline': self._raceline,
             '/api/tuning': self._tuning,
             '/api/sessions': self._sessions,
+            '/api/frontier': self._frontier,
             '/api/jobs': self._jobs,
         }
         if path in routes:
@@ -356,6 +357,25 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         return self._send(200, {'evaluations': recs[-200:], 'best': best})
+
+    def _frontier(self):
+        """The lap-time / grip-margin trade curve, if one has been computed.
+
+        Read straight from disk rather than recomputed on request: a frontier
+        costs minutes of simulation, so the dashboard shows the last one and
+        offers a button to refresh it, instead of blocking a page load.
+        """
+        p = os.path.join(REPO, 'runtime', 'frontier.json')
+        if not os.path.exists(p):
+            return self._send(200, {'frontier': [], 'stale': True})
+        try:
+            with open(p) as f:
+                data = json.load(f)
+            data['computed'] = os.path.getmtime(p)
+            data['stale'] = False
+            return self._send(200, data)
+        except Exception as e:
+            return self._send(200, {'frontier': [], 'error': str(e)})
 
     def _sessions(self):
         base = os.path.join(REPO, 'practice')

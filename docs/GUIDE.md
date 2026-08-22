@@ -180,37 +180,37 @@ perturbed starts vary by about 0.01 s. **Grip is the axis that ends races.**
 ### 4.6 Decide how much margin to buy
 
 ```bash
-python3 tools/robustness_frontier.py --top 10 --trials 8
+atlas run frontier -- --top 10 --trials 8
 ```
 
 Re-scores the tuning candidates across a fine grip grid, on starting poses the
 tuner never saw, and prints the Pareto frontier — lap time against the lowest
-friction each setup still completes at:
+friction each setup still completes at. It reads the delay and steering limit
+from `config/hardware.yaml`, so it measures *your* car.
+
+Measured on comp_track with the real 100 ms latency, the frontier collapses to a
+single row:
 
 ```
 survives down to       lap    cost
-        mu 0.95     35.27s   +0.00s
-        mu 0.90     35.69s   +0.41s
-        mu 0.80     36.54s   +1.27s
+        mu 0.80     41.60s   +0.00s
 ```
 
-**Those particular numbers came from a search with no actuation delay, and they
-are not what the car does.** They are left here only to show the shape of the
-output. Re-measured against this car's real 100 ms, that "35.27 s" setup is
-41.9 s and 0% reliable at mu 0.90; a search that models the delay produces
-41.60 s and 100% from mu 1.05 down to 0.80. `bayes_tune` now takes the delay
-from `hardware.yaml` automatically, so a fresh run gives you honest figures —
-but never compare a number from before that change with one from after.
+**Once the delay is modelled there is barely a trade left to make.** All four
+other candidates were dominated — slower *and* no more robust. That is not the
+tool failing to find a curve; it is the physics changing which constraint binds.
+With 100 ms of lag the latency is the limit, and any setup gentle enough to cope
+with it is already gentle enough on grip to survive a bad surface.
 
-Pick the lowest grip you actually want to survive, then take the fastest row at
-or below it. Make that call with the track in front of you: a clean carpet on
-fresh tyres is a different decision from a dusty hall on the third run of the
-day. Setups that another beats on *both* axes are omitted, so everything listed
-is a genuine choice.
+The visible trade in an earlier, latency-free frontier (0.41 s to gain a grip
+level) was an artefact of optimising a car that reacts instantly, where grip was
+the only thing pushing back.
 
-Treat the mu values as relative margin, not as a number you can measure on your
-track. What they tell you is how much surface degradation a setup absorbs before
-it stops finishing.
+So on this track, today: take the quickest setup that clears your grip floor —
+you are not paying for the margin. Re-run the frontier whenever the raceline,
+the surface or the measured delay changes, because which constraint binds can
+move.
+
 
 Everything is logged to `runtime/bayes_log.jsonl`; `--resume` continues where a
 previous session stopped, which matters when a practice slot ends mid-search.

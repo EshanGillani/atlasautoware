@@ -324,6 +324,23 @@ COMMANDS = [
              'which matters when each evaluation costs practice time.',
     ),
     dict(
+        id='frontier', group='tune', kind='python',
+        target='tools/robustness_frontier.py',
+        env='plain', where='host', needs=['numpy'],
+        title='Lap time vs how bad a surface the setup survives',
+        args=[('--top', 'how many of the quickest candidates to examine', '10'),
+              ('--trials', 'perturbed starts per grip level', '8'),
+              ('--delay', 'latency to model; defaults from hardware.yaml', None),
+              ('--threshold', 'success rate that counts as surviving', '1.0')],
+        long='Re-scores the candidates a tuning session produced across a fine '
+             'grip grid, on starting poses the tuner never saw, and prints the '
+             'Pareto frontier: lap time against the lowest friction each setup '
+             'still completes at. Setups another beats on BOTH axes are omitted, '
+             'so every row is a real choice. Pick the lowest grip you want to '
+             'survive, then take the fastest row at or below it -- with the '
+             'track in front of you, not in advance.',
+    ),
+    dict(
         id='auto-tune', group='tune', kind='python', target='tools/auto_tune.py',
         env='ros', where='sim', needs=['numpy'],
         title='Coordinate-descent tuning loop (the older tuner)',

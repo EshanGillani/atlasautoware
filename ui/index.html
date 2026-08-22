@@ -243,6 +243,14 @@
       25 × 8 is a few minutes; progress appears below as it goes.</div>
     <div id="bestcfg" style="margin-top:12px"></div>
   </div>
+  <div class="card" style="margin-bottom:16px">
+    <h2>Safety margin vs lap time <small>what consistency actually costs</small></h2>
+    <div class="row" style="margin-top:0">
+      <button class="btn ghost" onclick="runFrontier()">Recompute frontier</button>
+      <span id="frontmsg" style="color:var(--mut);font-size:12px"></span>
+    </div>
+    <div id="frontier" style="margin-top:12px"></div>
+  </div>
   <div class="card">
     <h2>Evaluations</h2>
     <canvas id="tunechart" width="900" height="240"></canvas>
@@ -288,7 +296,7 @@ const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt
 $$('nav button').forEach(b=>b.onclick=()=>{
   $$('nav button').forEach(x=>x.classList.toggle('on',x===b));
   $$('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab-'+b.dataset.tab));
-  ({tuning:loadTuning,practice:loadSessions,launch:loadCommands}[b.dataset.tab]||(()=>{}))();
+  ({tuning:()=>{loadTuning();loadFrontier();},practice:loadSessions,launch:loadCommands}[b.dataset.tab]||(()=>{}))();
 });
 
 /* ── environment pills ── */
@@ -411,6 +419,7 @@ async function runAndWatch(id,args,statusEl,label,confirmed){
     if(d.returncode===0){say(statusEl,`${label} finished (${secs}s)`,'ok');}
     else{say(statusEl,`${label} failed — ${tail||'exit '+d.returncode}`,'err');}
     if(id==='bayes-tune')loadTuning();
+    if(id==='frontier')loadFrontier();
     if(id==='practice')loadSessions();
   },1000);
 }
@@ -496,6 +505,50 @@ async function stopRace(){
 }
 
 /* ── tuning ── */
+function runFrontier(){
+  runAndWatch('frontier', ['--top', '8', '--trials', '6'], '#frontmsg',
+              'frontier');
+}
+async function loadFrontier(){
+  let d; try{ d = await j('/api/frontier'); }catch(e){ return; }
+  const rows = d.frontier || [];
+  if(!rows.length){
+    $('#frontier').innerHTML =
+      '<div class="empty">No frontier yet — run the tuner, then recompute.</div>';
+    return;
+  }
+  // lower grip_floor = survives a worse surface, so list the toughest first
+  rows.sort((a,b)=>a.grip_floor-b.grip_floor);
+  const quickest = Math.min(...rows.map(r=>r.lap));
+  const when = d.computed ? new Date(d.computed*1000).toLocaleString() : 'unknown';
+  const a = d.assumptions || {};
+  // A frontier computed without the car's latency is a different car. Say so
+  // rather than letting the reader assume these numbers are comparable.
+  const stamp = a.delay === undefined
+    ? '<b style="color:var(--amb)">computed before assumptions were recorded — '
+      + 'recompute before trusting these</b>'
+    : `delay ${(a.delay*1000).toFixed(0)} ms, max_steer ${(+a.max_steer).toFixed(2)} rad, `
+      + `${a.trials} starts/level on ${a.raceline}`
+      + (a.delay > 0 ? '' : ' <b style="color:var(--amb)">(no delay modelled — '
+                            + 'not this car)</b>');
+  $('#frontier').innerHTML =
+    '<table><tr><th>survives down to</th><th>lap</th><th>cost</th>'
+    +'<th>v_scale</th><th>a_lat</th></tr>'
+    + rows.map(r=>{
+        const c = r.config||{}, extra = r.lap - quickest;
+        return `<tr><td>mu ${r.grip_floor.toFixed(2)}</td>`
+          +`<td>${r.lap.toFixed(2)}s</td>`
+          +`<td>${extra>0.005?('+'+extra.toFixed(2)+'s'):'—'}</td>`
+          +`<td>${(+c.v_scale).toFixed(2)}</td>`
+          +`<td>${(+c.a_lat).toFixed(2)}</td></tr>`;
+      }).join('')
+    + '</table>'
+    + `<p class="note">Pick the lowest grip you actually want to survive, then `
+    + `take the fastest row at or below it. Rows another setup beats on both `
+    + `axes are omitted, so each one is a real choice.<br>${stamp}<br>`
+    + `<span style="color:var(--mut)">Computed ${when}.</span></p>`;
+}
+
 function startTuning(resume){
   const args=['--iters',$('#tuneIters').value.trim()||'25',
               '--trials',$('#tuneTrials').value.trim()||'8'];

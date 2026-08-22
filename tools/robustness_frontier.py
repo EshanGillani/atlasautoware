@@ -36,7 +36,8 @@ import numpy as np
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, 'tools'))
 
-from bayes_tune import SPACE, Objective                    # noqa: E402
+from bayes_tune import (SPACE, Objective, hardware_max_steer,   # noqa: E402
+                        hardware_param)
 
 RUNTIME = os.path.join(REPO, 'runtime')
 NAMES = [s[0] for s in SPACE]
@@ -89,7 +90,8 @@ def pareto(rows):
     return out
 
 
-def grip_floor(cfg, raceline, mus, trials, threshold, seed):
+def grip_floor(cfg, raceline, mus, trials, threshold, seed, delay=0.0,
+               max_steer=0.41):
     """-> (nominal lap, lowest mu completed at >= threshold, per-mu successes).
 
     Walks DOWN the grid and stops at the first failure: below the point where a
@@ -99,7 +101,7 @@ def grip_floor(cfg, raceline, mus, trials, threshold, seed):
     per, floor, nominal = {}, None, None
     for mu in mus:
         obj = Objective(raceline, trials=trials, seed=seed, mu=mu,
-                        min_success=0.0)
+                        min_success=0.0, delay=delay, max_steer=max_steer)
         _score, info = obj(dict(cfg))
         per[mu] = info['success']
         if nominal is None:
@@ -127,10 +129,21 @@ def main():
                     help='success rate that counts as "survives"')
     ap.add_argument('--mus', type=float, nargs='+',
                     default=[1.05, 1.00, 0.95, 0.90, 0.85, 0.80, 0.75])
+    ap.add_argument('--delay', type=float, default=None,
+                    help='sensor-to-actuator latency (s); defaults to '
+                         'raceline_mpc.actuation_delay in hardware.yaml. A '
+                         'frontier measured without it is not this car.')
+    ap.add_argument('--max-steer', type=float, default=None,
+                    help='steering limit (rad); defaults to '
+                         'drive_node.max_steer in hardware.yaml')
     ap.add_argument('--seed', type=int, default=11,
                     help='starts unseen by the tuner, so this is not a re-read '
                          'of what the search already optimized against')
     args = ap.parse_args()
+
+    delay = (args.delay if args.delay is not None
+             else hardware_param('raceline_mpc', 'actuation_delay', 0.0))
+    max_steer = args.max_steer if args.max_steer else hardware_max_steer()
 
     cands = load_candidates(args.log)
     if not cands:
@@ -140,7 +153,9 @@ def main():
     cands.sort(key=lambda c: (c[1] if c[1] is not None else 1e9))
     cands = cands[:args.top]
     print(f'{len(cands)} candidates, {args.trials} starts at each of '
-          f'{len(args.mus)} grip levels (seed {args.seed}, unseen by the tuner)\n')
+          f'{len(args.mus)} grip levels (seed {args.seed}, unseen by the tuner)')
+    print(f'delay {delay * 1000:.0f} ms, max_steer {max_steer:.2f} rad '
+          f'(from config/hardware.yaml)\n')
 
     mus = sorted(args.mus, reverse=True)
     header = ' '.join(f'{m:>5.2f}' for m in mus)
@@ -150,7 +165,8 @@ def main():
     rows = []
     for i, (cfg, _score, src) in enumerate(cands, 1):
         nominal, floor, per = grip_floor(cfg, args.raceline, mus, args.trials,
-                                         args.threshold, args.seed)
+                                         args.threshold, args.seed,
+                                         delay=delay, max_steer=max_steer)
         cells = ' '.join(
             (f'{per[m]*100:>4.0f}%' if m in per else '    -') for m in mus)
         print(f"{i:>3} {(f'{nominal:.2f}s' if nominal else '   --'):>8} "
@@ -187,6 +203,14 @@ def main():
     with open(out, 'w') as f:
         json.dump({'frontier': [{'lap': n, 'grip_floor': fl, 'config': c}
                                 for n, fl, c, _ in sorted(frontier)],
+                   # Stamp the assumptions. A frontier computed without the
+                   # car's latency reports 35.3 s where that same setup really
+                   # laps 41.9 s, so a reader must never have to guess which
+                   # one is on screen.
+                   'assumptions': {'delay': delay, 'max_steer': max_steer,
+                                   'mus': list(mus), 'trials': args.trials,
+                                   'raceline': os.path.basename(args.raceline),
+                                   'seed': args.seed},
                    'most_robust': {'lap': best_robust[0],
                                    'grip_floor': best_robust[1],
                                    'config': best_robust[2]}}, f, indent=2)
